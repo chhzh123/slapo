@@ -302,9 +302,11 @@ class ReplaceAllPrimitive(Primitive):
 
     @staticmethod
     def apply(sch, target_mod_type, make_mod_fn):
-        module_names = dict(sch.mod.named_modules()).keys()
-        for name in module_names:
-            subsch = sch[name]
-            if isinstance(subsch.mod, target_mod_type):
-                new_mod = make_mod_fn(name, subsch.mod)
-                subsch.replace(new_mod)
+        def traverse_subsch(sch):
+            for child_name, subsch in sch.child.items():
+                traverse_subsch(subsch)
+                if isinstance(subsch.mod, target_mod_type):
+                    new_mod = make_mod_fn(f"{sch.path}.{child_name}", subsch.mod)
+                    subsch.replace(new_mod)
+
+        traverse_subsch(sch)
