@@ -58,7 +58,7 @@ class Matmul:
         return self.comm_cost_map[Spec(lhs).spec]
 
     def calculate_comm_cost_z3(self, lhs, rhs):
-        result = 10e8 # invalid
+        result = 1e8 # invalid
         for inp, cost in self.comm_cost_map.items():
             result = z3.If(lhs == Spec(inp).id, cost, result)
         return result
@@ -92,26 +92,42 @@ for op in ops:
     # communication cost
     comm_costs.append(op.calculate_comm_cost_z3(lhs, rhs))
 
-def calculate_reshard_cost(prev, curr):
-    return z3.If(prev == Spec("RR").id,
-        z3.If(curr == Spec("RR").id, 0,
-            z3.If(curr == Spec("RS").id, 0,
-                z3.If(curr == Spec("SR").id, 0, 0))),
-        z3.If(prev == Spec("RS").id,
-            z3.If(curr == Spec("RR").id, 1 / p * M * K,
-                z3.If(curr == Spec("RS").id, 0,
-                    z3.If(curr == Spec("SR").id, (1 / p - 1 / (p * p)) * M * K, 0))),
-            z3.If(prev == Spec("SR").id,
-                z3.If(curr == Spec("RR").id, 1 / p * M * K,
-                    z3.If(curr == Spec("RS").id, (1 / p - 1 / (p * p)) * M * K,
-                        z3.If(curr == Spec("SR").id, 0, 0))),
-                0)))
+reshard_cost_map = {
+    "RR": {
+        "RR": 0,
+        "RS": 0,
+        "SR": 0
+    },
+    "RS": {
+        "RR": 1 / p,
+        "RS": 0,
+        "SR": 1 / p - 1 / (p * p)
+    },
+    "SR": {
+        "RR": 1 / p,
+        "RS": 1 / p - 1 / (p * p),
+        "SR": 0
+    }
+}
+
+def calculate_reshard_cost(prev, curr, shape):
+    return reshard_cost_map[Spec(prev).spec][Spec(curr).spec] * shape
+
+def calculate_reshard_cost_z3(prev, curr, shape):
+    result = 1e8 # invalid
+    for in_spec, target_map in reshard_cost_map.items():
+        tmp = 1e8 # invalid
+        for out_spec, val in target_map.items():
+            tmp = z3.If(curr == Spec(out_spec).id, val * shape, tmp)
+        result = z3.If(prev == Spec(in_spec).id, tmp, result)
+    return result
 
 reshard_costs = []
-for i in range(len(outputs)):
+for i, op in enumerate(ops):
     prev = outputs[i]
-    curr = outputs[i + 1] if i < len(outputs) - 1 else Spec("RR").id
-    reshard_costs.append(calculate_reshard_cost(prev, curr))
+    curr = bitvecs[f"{ops[i + 1].name}_lhs"] if i < len(ops) - 1 else Spec("RR").id
+    shape = M * K if i == 0 else K * N
+    reshard_costs.append(calculate_reshard_cost_z3(prev, curr, shape))
 
 cost = sum(comm_costs) + sum(reshard_costs)
 
@@ -126,39 +142,15 @@ def model_values(model):
         for d in model.decls()
     }
 
-def calculate_reshard_cost(prev, curr):
-    if prev == Spec("RR").id:
-        if curr == Spec("RR").id:
-            return 0
-        elif curr == Spec("RS").id:
-            return 0
-        elif curr == Spec("SR").id:
-            return 0
-    elif prev == Spec("RS").id:
-        if curr == Spec("RR").id:
-            return 1 / p * M * K
-        elif curr == Spec("RS").id:
-            return 0
-        elif curr == Spec("SR").id:
-            return (1 / p - 1 / (p * p)) * M * K
-    elif prev == Spec("SR").id:
-        if curr == Spec("RR").id:
-            return 1 / p * M * K
-        elif curr == Spec("RS").id:
-            return (1 / p - 1 / (p * p)) * M * K
-        elif curr == Spec("SR").id:
-            return 0
-    else:
-        raise ValueError("Invalid spec")
-
 sol = z3.Solver()
-max_cost = 10e8
+max_cost = 1e8
 for _ in range(3):
     print("=====================================")
     sol.add(goal)
     sol.push()
     sol.add(cost < max_cost)
     sol.check()
+    # print(sol)
     mod = sol.model()
     print(mod)
     results = model_values(mod)
@@ -170,7 +162,9 @@ for _ in range(3):
         output = op.generate_output(lhs, rhs)
         print(f"{name}: {Spec(lhs)} x {Spec(rhs)} = {Spec(output)}")
         comm_cost = op.calculate_comm_cost(lhs, rhs)
-        reshard_cost = calculate_reshard_cost(output, results[f"{ops[i + 1].name}_lhs"] if i < len(ops) - 1 else Spec("RR").id)
+        shape = M * K if i == 0 else K * N
+        next_inp = results[f"{ops[i + 1].name}_lhs"] if i < len(ops) - 1 else Spec("RR").id
+        reshard_cost = calculate_reshard_cost(output, next_inp, shape)
         max_cost += comm_cost + reshard_cost
         print(comm_cost, reshard_cost)
     print("Total cost:", max_cost)
