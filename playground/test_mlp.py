@@ -37,6 +37,22 @@ class Spec:
     def __str__(self):
         return self.spec
 
+output_map = {"RR": "RS", "RS": "RR", "SR": "SR"}
+
+class Matmul:
+
+    @staticmethod
+    def generate_output(lhs, rhs):
+        return Spec(output_map[Spec(lhs).spec]).id
+    
+    @staticmethod
+    def generate_output_z3(lhs, rhs):
+        result = 3 # invalid
+        for inp, out in output_map.items():
+            result = z3.If(lhs == Spec(inp).id, Spec(out).id, result)
+        return result
+
+
 input_constraints = []
 format_constraints = []
 outputs = []
@@ -58,11 +74,7 @@ for op in ops:
     format_constraints.extend([z3.ULE(lhs, 3), z3.ULE(rhs, 3)])
 
     # output
-    outputs.append(z3.If(lhs == Spec("RR").id, # RR x RS
-                   Spec("RS").id,
-                z3.If(lhs == Spec("RS").id, # RS x SR
-                    Spec("RR").id,
-                    Spec("SR").id))) # SR x RR
+    outputs.append(Matmul.generate_output_z3(lhs, rhs)) # SR x RR
 
     # communication cost
     comm_costs.append(z3.If(lhs == Spec("RR").id, # RR x RS
@@ -105,14 +117,6 @@ def model_values(model):
         for d in model.decls()
     }
 
-def generate_output(lhs, rhs):
-    if lhs == Spec("RR").id: # RR x RS
-        return Spec("RS").id
-    elif lhs == Spec("RS").id: # RS x SR
-        return Spec("RR").id
-    elif lhs == Spec("SR").id: # SR x RR
-        return Spec("SR").id
-
 def calculate_comm_cost(lhs, rhs):
     if lhs == Spec("RR").id: # RR x RS
         return 0
@@ -122,6 +126,7 @@ def calculate_comm_cost(lhs, rhs):
         return 0
 
 def calculate_reshard_cost(prev, curr):
+    print("reshard", prev, curr)
     if prev == Spec("RR").id:
         if curr == Spec("RR").id:
             return 0
@@ -162,10 +167,11 @@ for _ in range(3):
     for i, op in enumerate(ops):
         lhs = results[f"{op}_lhs"]
         rhs = results[f"{op}_rhs"]
-        output = generate_output(lhs, rhs)
+        output = Matmul.generate_output(lhs, rhs)
         print(f"{op}: {Spec(lhs)} x {Spec(rhs)} = {Spec(output)}")
         comm_cost = calculate_comm_cost(lhs, rhs)
         reshard_cost = calculate_reshard_cost(output, results[f"{ops[i + 1]}_lhs"] if i < len(ops) - 1 else Spec("RR").id)
         max_cost += comm_cost + reshard_cost
-        print(comm_cost, reshard_cost, max_cost)
+        print(comm_cost, reshard_cost)
+    print("Total cost:", max_cost)
     sol.pop()
