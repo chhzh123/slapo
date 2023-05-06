@@ -61,17 +61,8 @@ class FusedQKV(nn.Linear):
 
 fused_qkv = FusedQKV(hidden_size=config.hidden_size, num_heads=config.num_attention_heads)
 subsch.replace(fused_qkv, qkv_subgraphs)
-print(subsch.mod)
+print(subsch.mod.graph)
 
-from torch.fx.passes.shape_prop import ShapeProp
-sp = ShapeProp(subsch.mod)
-inputs = [torch.randn(8, 512, 1024)]
-sp.propagate(*inputs)
-for node in subsch.mod.graph.nodes:
-    if "tensor_meta" in node.meta:
-        if isinstance(node.meta["tensor_meta"], list):
-            lst = node.meta["tensor_meta"]
-        else:
-            lst = [node.meta["tensor_meta"]]
-        for data in lst:
-            print(node.name, data)
+from solver import Solver
+sol = Solver(subsch.mod)
+sol.solve([torch.randn(8, 512, 1024)])
