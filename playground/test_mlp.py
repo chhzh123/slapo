@@ -45,8 +45,8 @@ for op in ops:
     # no need to include output, since output can be obtained from inputs
     lhs = z3.BitVec(f"{op}_lhs", 2) # input
     rhs = z3.BitVec(f"{op}_rhs", 2) # weight
-    bitvecs[lhs] = lhs
-    bitvecs[rhs] = rhs
+    bitvecs[f"{op}_lhs"] = lhs
+    bitvecs[f"{op}_rhs"] = rhs
 
     # input constraints
     constraints = [z3.And(lhs == Spec("RR").id, rhs == Spec("RS").id),
@@ -95,15 +95,9 @@ for i in range(len(outputs)):
 cost = sum(comm_costs) + sum(reshard_costs)
 
 goal = []
+goal += [bitvecs["matmul_lhs"] == Spec("RR").id]
 goal += input_constraints
 goal += format_constraints
-goal.append(cost < 1e10)
-
-def solve(phi):
-    sol = z3.Solver()
-    sol.add(phi)
-    sol.check()
-    return sol.model()
 
 def model_values(model):
     return {
@@ -111,12 +105,67 @@ def model_values(model):
         for d in model.decls()
     }
 
-mod = solve(goal)
-print(mod)
-results = model_values(mod)
-for i, op in enumerate(ops):
-    lhs = results[f"{op}_lhs"]
-    rhs = results[f"{op}_rhs"]
-    # output = generate_output(lhs, rhs)
-    print(f"{op}: {Spec(lhs)} x {Spec(rhs)}")
-    # print(calculate_comm_cost(lhs, rhs), calculate_reshard_cost(output, results[f"{ops[i + 1]}_lhs"] if i < len(ops) - 1 else Spec("RR").id))
+def generate_output(lhs, rhs):
+    if lhs == Spec("RR").id: # RR x RS
+        return Spec("RS").id
+    elif lhs == Spec("RS").id: # RS x SR
+        return Spec("RR").id
+    elif lhs == Spec("SR").id: # SR x RR
+        return Spec("SR").id
+
+def calculate_comm_cost(lhs, rhs):
+    if lhs == Spec("RR").id: # RR x RS
+        return 0
+    elif lhs == Spec("RS").id: # RS x SR
+        return M * K # all_reduce
+    elif lhs == Spec("SR").id:
+        return 0
+
+def calculate_reshard_cost(prev, curr):
+    if prev == Spec("RR").id:
+        if curr == Spec("RR").id:
+            return 0
+        elif curr == Spec("RS").id:
+            return 0
+        elif curr == Spec("SR").id:
+            return 0
+    elif prev == Spec("RS").id:
+        if curr == Spec("RR").id:
+            return 1 / p * M * K
+        elif curr == Spec("RS").id:
+            return 0
+        elif curr == Spec("SR").id:
+            return (1 / p - 1 / (p * p)) * M * K
+    elif prev == Spec("SR").id:
+        if curr == Spec("RR").id:
+            return 1 / p * M * K
+        elif curr == Spec("RS").id:
+            return (1 / p - 1 / (p * p)) * M * K
+        elif curr == Spec("SR").id:
+            return 0
+    else:
+        raise ValueError("Invalid spec")
+
+sol = z3.Solver()
+max_cost = 10e8
+for _ in range(3):
+    print("=====================================")
+    sol.add(goal)
+    sol.push()
+    sol.add(cost < max_cost)
+    sol.check()
+    mod = sol.model()
+    print(mod)
+    results = model_values(mod)
+    print(calculate_reshard_cost(Spec("RR").id, results[f"{ops[0]}_lhs"]))
+    max_cost = 0
+    for i, op in enumerate(ops):
+        lhs = results[f"{op}_lhs"]
+        rhs = results[f"{op}_rhs"]
+        output = generate_output(lhs, rhs)
+        print(f"{op}: {Spec(lhs)} x {Spec(rhs)} = {Spec(output)}")
+        comm_cost = calculate_comm_cost(lhs, rhs)
+        reshard_cost = calculate_reshard_cost(output, results[f"{ops[i + 1]}_lhs"] if i < len(ops) - 1 else Spec("RR").id)
+        max_cost += comm_cost + reshard_cost
+        print(comm_cost, reshard_cost, max_cost)
+    sol.pop()
