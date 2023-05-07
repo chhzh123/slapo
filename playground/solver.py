@@ -215,7 +215,7 @@ class Solver:
                 output = op.generate_output(lhs, rhs)
                 print(f"{name}: {op.lhs_shape} x {op.rhs_shape} = {op.out_shape}")
                 print(
-                    f"{name}: {ShardSpec(lhs)} x {ShardSpec(rhs)} = {ShardSpec(output)}"
+                    f"  {name}: {ShardSpec(lhs)} x {ShardSpec(rhs)} = {ShardSpec(output)}"
                 )
                 comm_cost = op.calculate_comm_cost(lhs, rhs)
                 next_inp = (
@@ -227,7 +227,7 @@ class Solver:
                     output, next_inp, op.out_size
                 )
                 max_cost += comm_cost + reshard_cost
-                print(f"Comm cost: {comm_cost}, reshard cost: {reshard_cost}")
+                print(f"  Comm cost: {comm_cost}, reshard cost: {reshard_cost}")
             print("Total cost:", max_cost)
             sol.pop()
         # generate sharding sequence
@@ -243,13 +243,14 @@ class Solver:
                 dim = 1
             else:
                 continue
-            print(f'sch["{op.node.target}"].shard("weight", dim={dim})')
-            if dim == 0:
-                print(f'sch["{op.node.target}"].shard("bias", dim={dim})')
-            if (
-                self.best_spec[f"{name}_lhs"] == ShardSpec("RS").id
-                and self.best_spec[f"{name}_rhs"] == ShardSpec("SR").id
-            ):
-                print(
-                    f'sch["{op.node.target}"].sync(mode="fwd_post", sync_op_or_fn="all_reduce")'
-                )
+            if op.node.op == "call_module":
+                print(f'sch["{op.node.target}"].shard("weight", dim={dim})')
+                if dim == 0:
+                    print(f'sch["{op.node.target}"].shard("bias", dim={dim})')
+                if (
+                    self.best_spec[f"{name}_lhs"] == ShardSpec("RS").id
+                    and self.best_spec[f"{name}_rhs"] == ShardSpec("SR").id
+                ):
+                    print(
+                        f'sch["{op.node.target}"].sync(mode="fwd_post", sync_op_or_fn="all_reduce")'
+                    )
