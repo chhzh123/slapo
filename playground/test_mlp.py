@@ -13,6 +13,8 @@ M = 512
 K = 1024
 N = 1024
 p = 2
+print("M*K: ", M*K)
+print("K*N: ", K*N)
 
 bitvecs = {}
 
@@ -144,12 +146,15 @@ def model_values(model):
 
 sol = z3.Solver()
 max_cost = 1e8
-for _ in range(3):
-    print("=====================================")
+for it in range(3):
+    print(f"=================== Iter {it} ===================")
     sol.add(goal)
     sol.push()
     sol.add(cost < max_cost)
-    sol.check()
+    sat = sol.check()
+    if str(sat) == "unsat":
+        print("Cannot find solution")
+        break
     # print(sol)
     mod = sol.model()
     print(mod)
