@@ -203,8 +203,8 @@ class Solver:
                 name = op.name
                 lhs = results[f"{name}_lhs"]
                 rhs = results[f"{name}_rhs"]
-                print(name, op.lhs_shape, op.rhs_shape, op.out_shape)
                 output = op.generate_output(lhs, rhs)
+                print(f"{name}: {op.lhs_shape} x {op.rhs_shape} = {op.out_shape}")
                 print(
                     f"{name}: {ShardSpec(lhs)} x {ShardSpec(rhs)} = {ShardSpec(output)}"
                 )
@@ -218,7 +218,7 @@ class Solver:
                     output, next_inp, op.out_size
                 )
                 max_cost += comm_cost + reshard_cost
-                print(comm_cost, reshard_cost)
+                print(f"Comm cost: {comm_cost}, reshard cost: {reshard_cost}")
             print("Total cost:", max_cost)
             sol.pop()
         # generate sharding sequence
@@ -229,12 +229,14 @@ class Solver:
             name = op.name
             weight = self.best_spec[f"{name}_rhs"]
             if weight == ShardSpec("RS").id:
-                dim = 1
+                dim = 0  # transposed
             elif weight == ShardSpec("SR").id:
-                dim = 0
+                dim = 1
             else:
                 continue
             print(f'sch["{op.node.target}"].shard("weight", dim={dim})')
+            if dim == 0:
+                print(f'sch["{op.node.target}"].shard("bias", dim={dim})')
             if (
                 self.best_spec[f"{name}_lhs"] == ShardSpec("RS").id
                 and self.best_spec[f"{name}_rhs"] == ShardSpec("SR").id
