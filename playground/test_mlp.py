@@ -8,13 +8,11 @@ S: Sharded
 2: 10 SR
 """
 
-# kernel size
-M = 512
-K = 1024
-N = 1024
+seq = 512
+d = 1024
+print(f"Linear1: ({seq} * {d}) x ({d} * {4 * d})")
+print(f"Linear2: ({seq} * {4 * d}) x ({4 * d} * {d})")
 p = 2
-print("M*K: ", M*K)
-print("K*N: ", K*N)
 
 bitvecs = {}
 
@@ -41,11 +39,17 @@ class Spec:
 
 class Matmul:
 
-    def __init__(self, name, m, n):
+    def __init__(self, name, m, k, n):
         self.name = name
-        self.shape = m * n
+        self.in_shape = m * k
+        self.weight_shape = k * n
+        self.out_shape = m * n
         self.output_map = {"RR": "RS", "RS": "RR", "SR": "SR"}
-        self.comm_cost_map = {"RR": 0, "RS": self.shape, "SR": 0}
+        self.comm_cost_map = { # map from input spec to comm cost
+            "RR": 0,
+            "RS": self.out_shape, # all_reduce
+            "SR": 0
+        }
 
     def generate_output(self, lhs, rhs):
         return Spec(self.output_map[Spec(lhs).spec]).id
@@ -65,7 +69,7 @@ class Matmul:
             result = z3.If(lhs == Spec(inp).id, cost, result)
         return result
 
-ops = [Matmul("matmul", M, K), Matmul("matmul_1", K, N)]
+ops = [Matmul("matmul", seq, d, 4*d), Matmul("matmul_1", seq, 4*d, d)]
 
 input_constraints = []
 format_constraints = []
@@ -113,14 +117,14 @@ reshard_cost_map = {
 }
 
 def calculate_reshard_cost(prev, curr, shape):
-    return reshard_cost_map[Spec(prev).spec][Spec(curr).spec] * shape
+    return int(reshard_cost_map[Spec(prev).spec][Spec(curr).spec] * shape)
 
 def calculate_reshard_cost_z3(prev, curr, shape):
     result = 1e8 # invalid
     for in_spec, target_map in reshard_cost_map.items():
         tmp = 1e8 # invalid
         for out_spec, val in target_map.items():
-            tmp = z3.If(curr == Spec(out_spec).id, val * shape, tmp)
+            tmp = z3.If(curr == Spec(out_spec).id, int(val * shape), tmp)
         result = z3.If(prev == Spec(in_spec).id, tmp, result)
     return result
 
@@ -128,8 +132,7 @@ reshard_costs = []
 for i, op in enumerate(ops):
     prev = outputs[i]
     curr = bitvecs[f"{ops[i + 1].name}_lhs"] if i < len(ops) - 1 else Spec("RR").id
-    shape = M * K if i == 0 else K * N
-    reshard_costs.append(calculate_reshard_cost_z3(prev, curr, shape))
+    reshard_costs.append(calculate_reshard_cost_z3(prev, curr, op.out_shape))
 
 cost = sum(comm_costs) + sum(reshard_costs)
 
@@ -167,9 +170,8 @@ for it in range(3):
         output = op.generate_output(lhs, rhs)
         print(f"{name}: {Spec(lhs)} x {Spec(rhs)} = {Spec(output)}")
         comm_cost = op.calculate_comm_cost(lhs, rhs)
-        shape = M * K if i == 0 else K * N
         next_inp = results[f"{ops[i + 1].name}_lhs"] if i < len(ops) - 1 else Spec("RR").id
-        reshard_cost = calculate_reshard_cost(output, next_inp, shape)
+        reshard_cost = calculate_reshard_cost(output, next_inp, op.out_shape)
         max_cost += comm_cost + reshard_cost
         print(comm_cost, reshard_cost)
     print("Total cost:", max_cost)
