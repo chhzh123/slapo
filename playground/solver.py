@@ -57,11 +57,11 @@ def calculate_reshard_cost_z3(prev, curr, shape):
 
 class MatmulOp:
 
-    def __init__(self, name, lhs_shape, rhs_shape):
+    def __init__(self, name, lhs_shape, rhs_shape, out_shape):
         self.name = name
         self.lhs_shape = lhs_shape
         self.rhs_shape = rhs_shape
-        self.out_shape = tuple(list(lhs_shape[:-2]) + [lhs_shape[-2], rhs_shape[-2]])
+        self.out_shape = out_shape
         self.lhs_size = lhs_shape[-2] * lhs_shape[-1]
         assert lhs_shape[-1] == rhs_shape[-1]
         # weight is transposed
@@ -163,10 +163,10 @@ class Solver():
             elif node.op == "call_module":
                 mod = self.named_modules[node.target]
                 if isinstance(mod, nn.Linear):
-                    self.z3_graph.append(MatmulOp(node.name, node.args[0].meta["tensor_meta"].shape, mod.weight.shape))
+                    self.z3_graph.append(MatmulOp(node.name, node.args[0].meta["tensor_meta"].shape, mod.weight.shape, node.meta["tensor_meta"].shape))
             elif node.op == "call_function":
                 if node.target == torch.matmul:
-                    self.z3_graph.append(MatmulOp(node.name, node.args[0].meta["tensor_meta"].shape, node.args[1].meta["tensor_meta"].shape))
+                    self.z3_graph.append(MatmulOp(node.name, node.args[0].meta["tensor_meta"].shape, node.args[1].meta["tensor_meta"].shape, node.meta["tensor_meta"].shape))
         self.construct_z3_problem()
         sol = z3.Solver()
         max_cost = 1e12
