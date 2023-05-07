@@ -12,13 +12,14 @@ device = f"cuda:{dist.get_rank()}"
 p = dist.get_world_size()
 
 if dist.get_rank() == 0:
-    x = torch.tensor([[1], [4], [7]]).to(device)
+    x = torch.tensor([[[1], [4], [7]], [[1], [4], [7]]]).to(device)
 elif dist.get_rank() == 1:
-    x = torch.tensor([[2], [5], [8]]).to(device)
+    x = torch.tensor([[[2], [5], [8]], [[2], [5], [8]]]).to(device)
 else:
-    x = torch.tensor([[3], [6], [9]]).to(device)
+    x = torch.tensor([[[3], [6], [9]], [[3], [6], [9]]]).to(device)
 in_shape = x.shape
 print(x, in_shape)
+
 
 def reshard_RS_to_SR(output):
     in_tensor = output
@@ -38,4 +39,21 @@ def reshard_RS_to_SR(output):
             ret = torch.cat(gather_list, dim=-1)
     return ret
 
-print(reshard_RS_to_SR(x))
+
+out = reshard_RS_to_SR(x)
+print(out)
+
+def reshard_SR_to_RR(output):
+    in_tensor = output
+    temp = in_tensor.transpose(0, -2)
+    temp = temp.contiguous()
+    gather_shape = list(temp.shape)
+    gather_shape[0] = dist.get_world_size() * gather_shape[0]
+    ret = torch.empty(gather_shape, dtype=temp.dtype, device=in_tensor.device)
+    dist.all_gather_into_tensor(ret, temp)
+    ret = ret.transpose(0, -2).contiguous()
+    return ret
+
+
+out = reshard_SR_to_RR(out)
+print(out.shape, out)
