@@ -153,9 +153,12 @@ class Solver:
 
         self.cost = sum(comm_costs) + sum(reshard_costs)
 
-        self.goal += [
-            bitvecs[f"{self.z3_graph[0].name}_lhs"] == ShardSpec("RR").id
-        ]  # input should not be sharded
+        # input should not be sharded
+        for op in self.z3_graph:
+            if op.node.args[0].op == "placeholder":
+                self.goal += [
+                    bitvecs[f"{op.name}_lhs"] == ShardSpec("RR").id
+                ]
         self.goal += input_constraints
         self.goal += format_constraints
 
