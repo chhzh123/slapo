@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 from transformers import BertLMHeadModel, AutoConfig
 import inspect
 import torch
@@ -9,21 +12,23 @@ model = BertLMHeadModel(config)
 print(config)
 
 import slapo
+
 sch = slapo.create_schedule(model)
 input_names = ["hidden_states"]
 subsch = sch["bert.encoder.layer.0.attention"]
 sig = inspect.signature(subsch.mod.forward)
 concrete_args = {
-    p.name: p.default
-    for p in sig.parameters.values()
-    if p.name not in input_names
+    p.name: p.default for p in sig.parameters.values() if p.name not in input_names
 }
 print(subsch.mod)
 print(concrete_args)
-subsch.trace(recursive=False, flatten=True, tracer="pytorch", concrete_args=concrete_args)
+subsch.trace(
+    recursive=False, flatten=True, tracer="pytorch", concrete_args=concrete_args
+)
 print(subsch.mod.graph)
 
 from slapo.pattern import call_module
+
 
 def pattern(x):
     x = call_module(r"self\.(query|key|value)", x)
@@ -31,8 +36,10 @@ def pattern(x):
     x = x.view(new_shape)
     return x.permute(0, 2, 1, 3)
 
+
 qkv_subgraphs = subsch.find(pattern)
 print(qkv_subgraphs)
+
 
 class FusedQKV(nn.Linear):
     def __init__(self, hidden_size, num_heads) -> None:
@@ -59,10 +66,14 @@ class FusedQKV(nn.Linear):
         v = torch.squeeze(v, -1).contiguous()
         return [q, k, v]
 
-fused_qkv = FusedQKV(hidden_size=config.hidden_size, num_heads=config.num_attention_heads)
+
+fused_qkv = FusedQKV(
+    hidden_size=config.hidden_size, num_heads=config.num_attention_heads
+)
 subsch.replace(fused_qkv, qkv_subgraphs)
 print(subsch.mod.graph)
 
 from solver import Solver
+
 sol = Solver(subsch.mod)
 sol.solve([torch.randn(8, 512, 1024)])
