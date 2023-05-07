@@ -6,9 +6,6 @@ import torch.nn as nn
 from torch.fx.passes.shape_prop import ShapeProp
 import z3
 
-# number of devices
-p = 2
-
 
 class ShardSpec:
     def __init__(self, spec):
@@ -24,27 +21,6 @@ class ShardSpec:
 
     def __str__(self):
         return self.spec
-
-
-reshard_cost_map = {
-    "RR": {"RR": 0, "RS": 0, "SR": 0},
-    "RS": {"RR": 1 / p, "RS": 0, "SR": 1 / p - 1 / (p * p)},
-    "SR": {"RR": 1 / p, "RS": 1 / p - 1 / (p * p), "SR": 0},
-}
-
-
-def calculate_reshard_cost(prev, curr, shape):
-    return int(reshard_cost_map[ShardSpec(prev).spec][ShardSpec(curr).spec] * shape)
-
-
-def calculate_reshard_cost_z3(prev, curr, shape):
-    result = 1e12  # invalid
-    for in_spec, target_map in reshard_cost_map.items():
-        tmp = 1e12  # invalid
-        for out_spec, val in target_map.items():
-            tmp = z3.If(curr == ShardSpec(out_spec).id, int(val * shape), tmp)
-        result = z3.If(prev == ShardSpec(in_spec).id, tmp, result)
-    return result
 
 
 class MatmulOp:
@@ -85,13 +61,19 @@ class MatmulOp:
 
 
 class Solver:
-    def __init__(self, gm) -> None:
+    def __init__(self, gm, p) -> None:
         self.gm = gm
         self.named_modules = dict(self.gm.named_modules())
         self.z3_graph = []
         self.goal = []
         self.cost = None
         self.shard_spec = {}  # {node_name: shard_spec}
+        self.num_devices = p
+        self.reshard_cost_map = {
+            "RR": {"RR": 0, "RS": 0, "SR": 0},
+            "RS": {"RR": 1 / p, "RS": 0, "SR": 1 / p - 1 / (p * p)},
+            "SR": {"RR": 1 / p, "RS": 1 / p - 1 / (p * p), "SR": 0},
+        }
 
     def inference_shape(self, inputs):
         sp = ShapeProp(self.gm)
@@ -104,6 +86,20 @@ class Solver:
                     lst = [node.meta["tensor_meta"]]
                 for data in lst:
                     print(node.name, data)
+
+    def calculate_reshard_cost(self, prev, curr, shape):
+        return int(
+            self.reshard_cost_map[ShardSpec(prev).spec][ShardSpec(curr).spec] * shape
+        )
+
+    def calculate_reshard_cost_z3(self, prev, curr, shape):
+        result = 1e12  # invalid
+        for in_spec, target_map in self.reshard_cost_map.items():
+            tmp = 1e12  # invalid
+            for out_spec, val in target_map.items():
+                tmp = z3.If(curr == ShardSpec(out_spec).id, int(val * shape), tmp)
+            result = z3.If(prev == ShardSpec(in_spec).id, tmp, result)
+        return result
 
     def construct_z3_problem(self):
         bitvecs = {}
@@ -144,7 +140,9 @@ class Solver:
                 if i < len(self.z3_graph) - 1
                 else ShardSpec("RR").id
             )
-            reshard_costs.append(calculate_reshard_cost_z3(prev, curr, op.out_size))
+            reshard_costs.append(
+                self.calculate_reshard_cost_z3(prev, curr, op.out_size)
+            )
 
         self.cost = sum(comm_costs) + sum(reshard_costs)
 
@@ -213,7 +211,9 @@ class Solver:
                     if i < len(self.z3_graph) - 1
                     else ShardSpec("RR").id
                 )
-                reshard_cost = calculate_reshard_cost(output, next_inp, op.out_size)
+                reshard_cost = self.calculate_reshard_cost(
+                    output, next_inp, op.out_size
+                )
                 max_cost += comm_cost + reshard_cost
                 print(comm_cost, reshard_cost)
             print("Total cost:", max_cost)

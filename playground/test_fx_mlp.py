@@ -22,5 +22,5 @@ class MLP(nn.Module):
 
 from solver import Solver
 
-sol = Solver(fx.symbolic_trace(MLP()))
+sol = Solver(fx.symbolic_trace(MLP()), p=2)
 sol.solve([torch.randn(512, 1024)])

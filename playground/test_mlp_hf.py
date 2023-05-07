@@ -31,5 +31,5 @@ print(subsch.mod.graph)
 
 from solver import Solver
 
-sol = Solver(subsch.mod)
+sol = Solver(subsch.mod, p=8)
 sol.solve([torch.randn(8, 512, 1024)])
