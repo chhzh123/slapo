@@ -24,17 +24,23 @@ class ShardSpec:
 
 
 class MatmulOp:
-    def __init__(self, node, name, lhs_shape, rhs_shape, out_shape):
+    def __init__(self, node, name, lhs_shape, rhs_shape, out_shape, transposed=False):
         self.node = node
         self.name = name
         self.lhs_shape = lhs_shape
         self.rhs_shape = rhs_shape
         self.out_shape = out_shape
         self.lhs_size = lhs_shape[-2] * lhs_shape[-1]
-        assert lhs_shape[-1] == rhs_shape[-1]
-        # weight is transposed
-        self.rhs_size = rhs_shape[-1] * rhs_shape[-2]
-        self.out_size = lhs_shape[-2] * rhs_shape[-2]
+        print(name, lhs_shape, rhs_shape, out_shape)
+        if transposed:
+            # weight is transposed
+            assert lhs_shape[-1] == rhs_shape[-1]
+            self.rhs_size = rhs_shape[-1] * rhs_shape[-2]
+            self.out_size = lhs_shape[-2] * rhs_shape[-2]
+        else:
+            assert lhs_shape[-1] == rhs_shape[-2]
+            self.rhs_size = rhs_shape[-2] * rhs_shape[-1]
+            self.out_size = lhs_shape[-2] * rhs_shape[-1]
         self.output_map = {"RR": "RS", "RS": "RR", "SR": "SR"}
         self.comm_cost_map = {  # map from input spec to comm cost
             "RR": 0,
@@ -167,7 +173,10 @@ class Solver:
                             node.name,
                             node.args[0].meta["tensor_meta"].shape,
                             mod.weight.shape,
-                            node.meta["tensor_meta"].shape,
+                            node.meta["tensor_meta"].shape
+                            if not isinstance(node.meta["tensor_meta"], list)
+                            else node.meta["tensor_meta"][0].shape,
+                            transposed=True,
                         )
                     )
             elif node.op == "call_function":
