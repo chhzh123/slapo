@@ -24,7 +24,8 @@ class ShardSpec:
 
 
 class MatmulOp:
-    def __init__(self, name, lhs_shape, rhs_shape, out_shape):
+    def __init__(self, node, name, lhs_shape, rhs_shape, out_shape):
+        self.node = node
         self.name = name
         self.lhs_shape = lhs_shape
         self.rhs_shape = rhs_shape
@@ -162,6 +163,7 @@ class Solver:
                 if isinstance(mod, nn.Linear):
                     self.z3_graph.append(
                         MatmulOp(
+                            node,
                             node.name,
                             node.args[0].meta["tensor_meta"].shape,
                             mod.weight.shape,
@@ -172,6 +174,7 @@ class Solver:
                 if node.target == torch.matmul:
                     self.z3_graph.append(
                         MatmulOp(
+                            node,
                             node.name,
                             node.args[0].meta["tensor_meta"].shape,
                             node.args[1].meta["tensor_meta"].shape,
@@ -181,7 +184,7 @@ class Solver:
         self.construct_z3_problem()
         sol = z3.Solver()
         max_cost = 1e12
-        for it in range(3):
+        for it in range(10):
             print(f"=================== Iter {it} ===================")
             sol.add(self.goal)
             sol.push()
@@ -190,7 +193,7 @@ class Solver:
             # print(sol)
             sat = sol.check()
             if str(sat) == "unsat":
-                print("Cannot find solution")
+                print("Cannot find better solutions")
                 break
             mod = sol.model()
             print(mod)
@@ -218,3 +221,24 @@ class Solver:
                 print(comm_cost, reshard_cost)
             print("Total cost:", max_cost)
             sol.pop()
+        # generate sharding sequence
+        self.best_spec = results
+        print()
+        print("Best solution:")
+        for op in self.z3_graph:
+            name = op.name
+            weight = self.best_spec[f"{name}_rhs"]
+            if weight == ShardSpec("RS").id:
+                dim = 1
+            elif weight == ShardSpec("SR").id:
+                dim = 0
+            else:
+                continue
+            print(f'sch["{op.node.target}"].shard("weight", dim={dim})')
+            if (
+                self.best_spec[f"{name}_lhs"] == ShardSpec("RS").id
+                and self.best_spec[f"{name}_rhs"] == ShardSpec("SR").id
+            ):
+                print(
+                    f'sch["{op.node.target}"].sync(mode="fwd_post", sync_op_or_fn="all_reduce")'
+                )
