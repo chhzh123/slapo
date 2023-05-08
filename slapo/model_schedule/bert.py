@@ -4,6 +4,7 @@
 # pylint: disable=unused-argument
 
 import inspect
+import torch
 import torch.distributed as dist
 from torch import nn
 import torch.nn.functional as F
@@ -74,15 +75,15 @@ def _apply_schedule(
         "Replace %d attention layers with %s op", cnt, applied_attn_op_name, ranks=0
     )
 
-    # Operator fusion
-    if not sch_config.get("disable_fuse_bias_gelu", True):
-        fuse_bias_gelu(sch[prefix], model_config)
-        logger.info("Fused Bias+GeLU", ranks=0)
-
     # Shard other parameters if MP group > 1.
     if sch.world_size > 1:
         shard_mlp(sch[prefix], model_config)
         shard_word_embedding(sch[prefix], model_config.vocab_size)
+
+    # Operator fusion
+    # if not sch_config.get("disable_fuse_bias_gelu", True):
+    #     fuse_bias_gelu(sch[prefix], model_config)
+    #     logger.info("Fused Bias+GeLU", ranks=0)
 
     if sch.world_size > 1 and sch_config.get("bcast_input", False):
         # Broadcast input to all devices within the MP group.
@@ -300,6 +301,40 @@ def shard_mlp(
     if sch.world_size == 1:
         return
 
+    def reshard_RS_to_SR(_module, _input, output):
+        in_tensor = output
+        in_shape = in_tensor.shape
+        chunk_shape = list(in_shape[:-2]) + [
+            in_shape[-2] // sch.world_size,
+            in_shape[-1],
+        ]
+        splitted_tensor = torch.split(in_tensor, in_shape[-2] // sch.world_size, dim=-2)
+        for i in range(sch.world_size):
+            send_tensor = splitted_tensor[i].contiguous()
+            if sch.rank != i:
+                dist.gather(send_tensor, dst=i, async_op=True)
+            else:
+                gather_list = [
+                    torch.empty(
+                        chunk_shape, dtype=in_tensor.dtype, device=in_tensor.device
+                    )
+                    for _ in range(sch.world_size)
+                ]
+                dist.gather(send_tensor, gather_list, dst=i)
+                ret = torch.cat(gather_list, dim=-1)
+        return ret
+
+    def reshard_SR_to_RR(_module, _input, output):
+        in_tensor = output
+        temp = in_tensor.transpose(0, -2)
+        temp = temp.contiguous()
+        gather_shape = list(temp.shape)
+        gather_shape[0] = sch.world_size * gather_shape[0]
+        ret = torch.empty(gather_shape, dtype=temp.dtype, device=in_tensor.device)
+        dist.all_gather_into_tensor(ret, temp)
+        ret = ret.transpose(0, -2).contiguous()
+        return ret
+
     for idx in range(model_config.num_hidden_layers):
         prefix = path.replace("N", str(idx))
         sch[f"{prefix}.{fc_names[0]}.dense"].shard("weight", axis=0)
@@ -307,9 +342,15 @@ def shard_mlp(
         sch[f"{prefix}.{fc_names[0]}.dense"].sync(
             mode="bwd_post", sync_op_or_fn="all_reduce"
         )
-        sch[f"{prefix}.{fc_names[1]}.dense"].shard("weight", axis=1)
+        # sch[f"{prefix}.{fc_names[1]}.dense"].shard("weight", axis=1)
+        # sch[f"{prefix}.{fc_names[1]}.dense"].sync(
+        #     mode="fwd_post", sync_op_or_fn="all_reduce"
+        # )
+        sch[f"{prefix}.{fc_names[0]}.dense"].sync(
+            "fwd_post", sync_op_or_fn=reshard_RS_to_SR
+        )
         sch[f"{prefix}.{fc_names[1]}.dense"].sync(
-            mode="fwd_post", sync_op_or_fn="all_reduce"
+            "fwd_post", sync_op_or_fn=reshard_SR_to_RR
         )
 
 
