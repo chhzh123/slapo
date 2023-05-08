@@ -4,8 +4,6 @@
 from transformers import BertLMHeadModel, AutoConfig
 import inspect
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 config = AutoConfig.from_pretrained("bert-large-uncased")
 model = BertLMHeadModel(config)
