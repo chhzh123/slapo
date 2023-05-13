@@ -195,10 +195,10 @@ class Solver:
                     )
         self.construct_z3_problem()
         sol = z3.Solver()
+        sol.add(self.goal)
         max_cost = 1e12
         for it in range(10):
             print(f"=================== Iter {it} ===================")
-            sol.add(self.goal)
             sol.push()
             assert self.cost is not None
             sol.add(self.cost < max_cost)
