@@ -41,6 +41,21 @@ class FxOp:
     def add_user(self, user):
         self.users.append(user)
 
+    def generate_input_z3(self):
+        raise NotImplementedError
+
+    def generate_output(self):
+        raise NotImplementedError
+
+    def generate_output_z3(self):
+        raise NotImplementedError
+
+    def calculate_comm_cost(self):
+        raise NotImplementedError
+
+    def calculate_comm_cost_z3(self):
+        raise NotImplementedError
+
 
 class PlaceholderOp(FxOp):
     def generate_input_z3(self):
@@ -136,8 +151,8 @@ class MatmulOp(FxOp):
         }
 
     def generate_input_z3(self):
-        self.lhs = z3.BitVec(f"{self.name}_lhs", 2)  # input
-        self.rhs = z3.BitVec(f"{self.name}_rhs", 2)  # weight
+        self.lhs = z3.BitVec(f"{self.name}_0", 2)  # input
+        self.rhs = z3.BitVec(f"{self.name}_1", 2)  # weight
 
         compute_constraints = [
             z3.Or(
@@ -306,7 +321,7 @@ class Solver:
             if not isinstance(op, MatmulOp):
                 continue
             for arg in op.args:
-                curr = bitvecs[op.name + "_lhs"]
+                curr = bitvecs[op.name + "_0"]
                 prev = arg.generate_output_z3()
                 reshard_costs.append(
                     self.calculate_reshard_cost_z3(prev, curr, arg.out_size)
@@ -326,7 +341,6 @@ class Solver:
     def solve(self, inputs, max_iter=100):
         self.inference_shape(inputs)
         self.construct_z3_graph()
-        sys.exit()
         self.construct_z3_problem()
         sol = z3.Solver()
         sol.add(self.goal)
@@ -348,8 +362,8 @@ class Solver:
             for name, op in self.z3_graph.items():
                 if not isinstance(op, MatmulOp):
                     continue
-                lhs = results[f"{name}_lhs"]
-                rhs = results[f"{name}_rhs"]
+                lhs = results[f"{name}_0"]
+                rhs = results[f"{name}_1"]
                 op.set_concrete_values(lhs, rhs)
                 output = op.generate_output()
                 print(f"{name}: {op.lhs_shape} x {op.rhs_shape} = {op.out_shape}")
@@ -385,7 +399,7 @@ class Solver:
         for name, op in self.z3_graph.items():
             if not isinstance(op, MatmulOp):
                 continue
-            weight = self.best_spec[f"{name}_rhs"]
+            weight = self.best_spec[f"{name}_1"]
             if weight == ShardSpec("RS").id:
                 dim = 0  # transposed
             elif weight == ShardSpec("SR").id:
@@ -397,8 +411,8 @@ class Solver:
                 if dim == 0:
                     print(f'sch["{op.node.target}"].shard("bias", dim={dim})')
                 if (
-                    self.best_spec[f"{name}_lhs"] == ShardSpec("RS").id
-                    and self.best_spec[f"{name}_rhs"] == ShardSpec("SR").id
+                    self.best_spec[f"{name}_0"] == ShardSpec("RS").id
+                    and self.best_spec[f"{name}_1"] == ShardSpec("SR").id
                 ):
                     print(
                         f'sch["{op.node.target}"].sync(mode="fwd_post", sync_op_or_fn="all_reduce")'
