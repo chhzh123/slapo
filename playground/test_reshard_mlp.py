@@ -17,11 +17,19 @@ import torch.distributed as dist
 
 NUM_PROC = 4
 
+# Input and Model Size
+SEQ = 1024
+D = 2048
+
+# Performance Testing
+TIMES = 10
+BS = 256
+
 class MLP(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(1024, 4096)
-        self.fc2 = nn.Linear(4096, 1024)
+        self.fc1 = nn.Linear(D, 4*D)
+        self.fc2 = nn.Linear(4*D, D)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -211,7 +219,7 @@ if dist.get_rank() == 0:
     print("===== 1. Naive RR =====")
 mlp_naive = copy.deepcopy(mlp).to(device=device)
 sch = slapo.create_schedule(mlp_naive)
-with slapo.Verify(sch, [torch.randn(8, 512, 1024).to(device=device)]):
+with slapo.Verify(sch, [torch.randn(8, SEQ, D).to(device=device)]):
     # do nothing
     pass
 mod_1, _ = slapo.build(sch)
@@ -221,7 +229,7 @@ if dist.get_rank() == 0:
     print("===== 2. RS -> SR =====")
 mlp_2 = copy.deepcopy(mlp).to(device=device)
 sch = slapo.create_schedule(mlp_2)
-with slapo.Verify(sch, [torch.randn(8, 512, 1024).to(device=device)]):
+with slapo.Verify(sch, [torch.randn(8, SEQ, D).to(device=device)]):
     sch["fc1"].shard("weight", axis=0)
     sch["fc1"].shard("bias", axis=0)
     sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_SR)
@@ -233,7 +241,7 @@ if dist.get_rank() == 0:
     print("===== 3. SR -> RS =====")
 mlp_3 = copy.deepcopy(mlp).to(device=device)
 sch = slapo.create_schedule(mlp_3)
-with slapo.Verify(sch, [torch.randn(8, 512, 1024).to(device=device)]):
+with slapo.Verify(sch, [torch.randn(8, SEQ, D).to(device=device)]):
     sch["fc1"].shard("weight", axis=0)
     sch["fc1"].shard("bias", axis=0)
     sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_SR_to_RS)
@@ -246,7 +254,7 @@ if dist.get_rank() == 0:
     print("===== 4. Megatron =====")
 mlp_4 = copy.deepcopy(mlp).to(device=device)
 sch = slapo.create_schedule(mlp_4)
-with slapo.Verify(sch, [torch.randn(8, 512, 1024).to(device=device)]):
+with slapo.Verify(sch, [torch.randn(8, SEQ, D).to(device=device)]):
     sch["fc1"].shard("weight", axis=0)
     sch["fc1"].shard("bias", axis=0)
     sch["fc2"].shard("weight", axis=1)
@@ -258,7 +266,7 @@ if dist.get_rank() == 0:
     print("===== 5. RR * RS -> RS =====")
 mlp_5 = copy.deepcopy(mlp).to(device=device)
 sch = slapo.create_schedule(mlp_5)
-with slapo.Verify(sch, [torch.randn(8, 512, 1024).to(device=device)]):
+with slapo.Verify(sch, [torch.randn(8, SEQ, D).to(device=device)]):
     sch["fc1"].shard("weight", axis=0)
     sch["fc1"].shard("bias", axis=0)
     sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR)
@@ -272,7 +280,7 @@ if dist.get_rank() == 0:
     print("===== 6. RR -> RS =====")
 mlp_6 = copy.deepcopy(mlp).to(device=device)
 sch = slapo.create_schedule(mlp_6)
-with slapo.Verify(sch, [torch.randn(8, 512, 1024).to(device=device)]):
+with slapo.Verify(sch, [torch.randn(8, SEQ, D).to(device=device)]):
     sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RR_to_RS)
     sch["fc2"].shard("weight", axis=1)
     sch["fc2"].sync("fwd_post", sync_op_or_fn="all_reduce")
@@ -283,7 +291,7 @@ if dist.get_rank() == 0:
     print("===== 7. RR -> SR =====")
 mlp_7 = copy.deepcopy(mlp).to(device=device)
 sch = slapo.create_schedule(mlp_7)
-with slapo.Verify(sch, [torch.randn(8, 512, 1024).to(device=device)]):
+with slapo.Verify(sch, [torch.randn(8, SEQ, D).to(device=device)]):
     sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RR_to_SR)
     sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR)
 mod_7, _ = slapo.build(sch)
@@ -293,7 +301,7 @@ if dist.get_rank() == 0:
     print("===== 8. RR -> RS =====")
 mlp_8 = copy.deepcopy(mlp).to(device=device)
 sch = slapo.create_schedule(mlp_8)
-with slapo.Verify(sch, [torch.randn(8, 512, 1024).to(device=device)]):
+with slapo.Verify(sch, [torch.randn(8, SEQ, D).to(device=device)]):
     sch["fc1"].sync("fwd_pre", sync_op_or_fn=reshard_RR_to_SR_pre)
     sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR)
 mod_8, _ = slapo.build(sch)
@@ -301,71 +309,88 @@ mod_8, _ = slapo.build(sch)
 
 
 # =============== Performance ==============
-TIMES = 10
-BS = 1024
+# Create cuda events
+start_event = torch.cuda.Event(enable_timing=True)
+end_event = torch.cuda.Event(enable_timing=True)
+
+def perf_model(mod, times=TIMES):
+    """Measure the performance of a mod with certain resharding schemes
+    """
+    start_event.record()
+    for _ in range(times):
+        mod(torch.randn(BS, SEQ, D).to(device=device))
+    end_event.record()
+    torch.cuda.synchronize()
+    if dist.get_rank() == 0:
+        print(f"{start_event.elapsed_time(end_event) / 1000}")
+
+
+
+
 
 # Mod 1: Naive
-start = time.time()
-for _ in range(TIMES):
-    mod_1(torch.randn(BS, 512, 1024).to(device=device))
-end = time.time()
-if dist.get_rank() == 0:
-    print("Mod 1: ", end - start)
+mods = [mod_1, mod_2, mod_4, mod_8, mod_5, mod_3, mod_6, mod_7]
 
-# Mod 2: Ours
-start = time.time()
-for _ in range(TIMES):
-    mod_2(torch.randn(BS, 512, 1024).to(device=device))
-end = time.time()
-if dist.get_rank() == 0:
-    print("Mod 2: ", end - start)
+for mod in mods:
+    perf_model(mod)
 
-# Mod 3
-start = time.time()
-for _ in range(TIMES):
-    mod_3(torch.randn(BS, 512, 1024).to(device=device))
-end = time.time()
-if dist.get_rank() == 0:
-    print("Mod 3: ", end - start)
 
-# Mod 4: Slapo-Megatron
-start = time.time()
-for _ in range(TIMES):
-    mod_4(torch.randn(BS, 512, 1024).to(device=device))
-end = time.time()
-if dist.get_rank() == 0:
-    print("Mod 4: ", end - start)
-# [BS, 512, 1024] (RR) * [1024, 2048] (RS) -> [BS, 512, 2048] (RS);
-# [BS, 512, 2048] (RS) * [2048, 1024] (SR) -> [BS, 512, 1024] (RR) (All reduce)
 
-# Mod 5: Weight Parallelism
-start = time.time()
-for _ in range(TIMES):
-    mod_5(torch.randn(BS, 512, 1024).to(device=device))
-end = time.time()
-if dist.get_rank() == 0:
-    print("Mod 5: ", end - start)
+# # Mod 2: Ours
+# start_event.record()
+# for _ in range(TIMES):
+#     mod_2(torch.randn(BS, SEQ, D).to(device=device))
+# end = time.time()
+# if dist.get_rank() == 0:
+#     print("Mod 2: ", end - start)
 
-# Mod 6
-start = time.time()
-for _ in range(TIMES):
-    mod_6(torch.randn(BS, 512, 1024).to(device=device))
-end = time.time()
-if dist.get_rank() == 0:
-    print("Mod 6: ", end - start)
+# # Mod 4: Slapo-Megatron
+# start_event.record()
+# for _ in range(TIMES):
+#     mod_4(torch.randn(BS, SEQ, D).to(device=device))
+# end = time.time()
+# if dist.get_rank() == 0:
+#     print("Mod 4: ", end - start)
+# # [BS, 512, 1024] (RR) * [1024, 2048] (RS) -> [BS, 512, 2048] (RS);
+# # [BS, 512, 2048] (RS) * [2048, 1024] (SR) -> [BS, 512, 1024] (RR) (All reduce)
 
-# Mod 7
-start = time.time()
-for _ in range(TIMES):
-    mod_7(torch.randn(BS, 512, 1024).to(device=device))
-end = time.time()
-if dist.get_rank() == 0:
-    print("Mod 7: ", end - start)
+# # Mod 8: Data Parallelism
+# start_event.record()
+# for _ in range(TIMES):
+#     mod_8(torch.randn(BS, SEQ, D).to(device=device))
+# end = time.time()
+# if dist.get_rank() == 0:
+#     print("Mod 8: ", end - start)
 
-# Mod 8: Data Parallelism
-start = time.time()
-for _ in range(TIMES):
-    mod_8(torch.randn(BS, 512, 1024).to(device=device))
-end = time.time()
-if dist.get_rank() == 0:
-    print("Mod 8: ", end - start)
+# # Mod 5: Weight Parallelism
+# start_event.record()
+# for _ in range(TIMES):
+#     mod_5(torch.randn(BS, SEQ, D).to(device=device))
+# end = time.time()
+# if dist.get_rank() == 0:
+#     print("Mod 5: ", end - start)
+
+# # Mod 3
+# start_event.record()
+# for _ in range(TIMES):
+#     mod_3(torch.randn(BS, SEQ, D).to(device=device))
+# end = time.time()
+# if dist.get_rank() == 0:
+#     print("Mod 3: ", end - start)
+
+# # Mod 6
+# start_event.record()
+# for _ in range(TIMES):
+#     mod_6(torch.randn(BS, SEQ, D).to(device=device))
+# end = time.time()
+# if dist.get_rank() == 0:
+#     print("Mod 6: ", end - start)
+
+# # Mod 7
+# start_event.record()
+# for _ in range(TIMES):
+#     mod_7(torch.randn(BS, SEQ, D).to(device=device))
+# end = time.time()
+# if dist.get_rank() == 0:
+#     print("Mod 7: ", end - start)
+
