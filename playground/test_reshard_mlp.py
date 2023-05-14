@@ -302,7 +302,7 @@ mod_8, _ = slapo.build(sch)
 
 # =============== Performance ==============
 TIMES = 10
-BS = 256
+BS = 1024
 
 # Mod 1: Naive
 start = time.time()
