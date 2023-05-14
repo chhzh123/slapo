@@ -125,6 +125,8 @@ class MatmulOp(FxOp):
         ]
         format_constraints = [z3.ULE(self.lhs, 3), z3.ULE(self.rhs, 3)]
         constraints = compute_constraints + format_constraints
+        # force to shard
+        # constraints += [self.lhs != ShardSpec("RR").id, self.rhs != ShardSpec("RR").id]
         return [self.lhs, self.rhs], constraints
 
     def set_concrete_values(self, lhs, rhs):
@@ -234,7 +236,7 @@ class Solver:
             comm_costs.append(op.calculate_comm_cost_z3())
 
         reshard_costs = []
-        for i, op in enumerate(self.z3_graph.values()):
+        for op in self.z3_graph.values():
             assert (
                 len(op.args) <= 1
             ), f"only support single input, but got multiple ({len(op.args)})"
@@ -244,7 +246,7 @@ class Solver:
                 curr = bitvecs[op.name + "_lhs"]
                 prev = arg.generate_output_z3()
                 reshard_costs.append(
-                    self.calculate_reshard_cost_z3(prev, curr, op.out_size)
+                    self.calculate_reshard_cost_z3(prev, curr, arg.out_size)
                 )
             # final output should not be sharded
             if len(op.users) == 0:
@@ -258,19 +260,19 @@ class Solver:
         self.cost = sum(comm_costs) + sum(reshard_costs)
         self.goal += input_constraints
 
-    def solve(self, inputs):
+    def solve(self, inputs, max_iter=100):
         self.inference_shape(inputs)
         self.construct_z3_graph()
         self.construct_z3_problem()
         sol = z3.Solver()
         sol.add(self.goal)
         max_cost = 1e12
-        for it in range(2):
+        for it in range(max_iter):
             print(f"=================== Iter {it} ===================")
             sol.push()
             assert self.cost is not None
             sol.add(self.cost < max_cost)
-            print(sol)
+            # print(sol)
             sat = sol.check()
             if str(sat) == "unsat":
                 print("Cannot find better solutions")
@@ -307,7 +309,9 @@ class Solver:
                         output, next_inp, op.out_size
                     )
                     max_cost += reshard_cost
-                    print(f"  Last resharding cost {ShardSpec(output)} -> {ShardSpec(next_inp)}: {reshard_cost}")
+                    print(
+                        f"  Last resharding cost {ShardSpec(output)} -> {ShardSpec(next_inp)}: {reshard_cost}"
+                    )
             print("Total cost:", max_cost)
             sol.pop()
         # generate sharding sequence
