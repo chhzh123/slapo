@@ -23,24 +23,80 @@ class ShardSpec:
         return self.spec
 
 
-class MatmulOp:
-    def __init__(self, node, name, lhs_shape, rhs_shape, out_shape, transposed=False):
+class FxOp:
+    def __init__(self, node):
         self.node = node
-        self.name = name
-        self.lhs_shape = lhs_shape
-        self.rhs_shape = rhs_shape
-        self.out_shape = out_shape
-        self.lhs_size = lhs_shape[-2] * lhs_shape[-1]
-        print(name, lhs_shape, rhs_shape, out_shape)
-        if transposed:
+        self.name = node.name
+        self.args = []
+        self.users = []
+        self.out_shape = node.meta["tensor_meta"].shape
+        self.out_size = self.out_shape[-2] * self.out_shape[-1]
+
+    def add_arg(self, arg):
+        self.args.append(arg)
+
+    def add_user(self, user):
+        self.users.append(user)
+
+
+class PlaceholderOp(FxOp):
+    def generate_input_z3(self):
+        self.x = z3.BitVec(f"{self.name}", 2)
+        # input should not be sharded
+        return [self.x], [self.x == ShardSpec("RR").id]
+
+    def generate_output(self):
+        return ShardSpec("RR").id
+
+    def generate_output_z3(self):
+        return self.x
+
+    def calculate_comm_cost(self):
+        return 0
+
+    def calculate_comm_cost_z3(self):
+        return 0
+
+
+class ElementwiseOp(FxOp):
+    def generate_input_z3(self):
+        return [], []
+
+    def generate_output(self):
+        return self.args[0].generate_output()
+
+    def generate_output_z3(self):
+        return self.args[0].generate_output_z3()
+
+    def calculate_comm_cost_z3(self):
+        return 0
+
+
+class MatmulOp(FxOp):
+    def __init__(self, node, mod=None, is_linear=False):
+        super().__init__(node)
+        self.lhs_shape = node.args[0].meta["tensor_meta"].shape
+        self.rhs_shape = (
+            node.args[1].meta["tensor_meta"].shape
+            if not is_linear
+            else mod.weight.shape
+        )
+        self.out_shape = (
+            node.meta["tensor_meta"].shape
+            if not isinstance(node.meta["tensor_meta"], list)
+            else node.meta["tensor_meta"][0].shape
+        )
+        self.lhs_size = self.lhs_shape[-2] * self.lhs_shape[-1]
+        print(self.name, self.lhs_shape, self.rhs_shape, self.out_shape)
+        if is_linear:
             # weight is transposed
-            assert lhs_shape[-1] == rhs_shape[-1]
-            self.rhs_size = rhs_shape[-1] * rhs_shape[-2]
-            self.out_size = lhs_shape[-2] * rhs_shape[-2]
+            assert self.lhs_shape[-1] == self.rhs_shape[-1]
+            self.rhs_size = self.rhs_shape[-1] * self.rhs_shape[-2]
+            self.out_size = self.lhs_shape[-2] * self.rhs_shape[-2]
         else:
-            assert lhs_shape[-1] == rhs_shape[-2]
-            self.rhs_size = rhs_shape[-2] * rhs_shape[-1]
-            self.out_size = lhs_shape[-2] * rhs_shape[-1]
+            assert self.lhs_shape[-1] == self.rhs_shape[-2]
+            self.rhs_size = self.rhs_shape[-2] * self.rhs_shape[-1]
+            self.out_size = self.lhs_shape[-2] * self.rhs_shape[-1]
         self.output_map = {"RR": "RS", "RS": "RR", "SR": "SR"}
         self.comm_cost_map = {  # map from input spec to comm cost
             "RR": 0,
@@ -48,22 +104,51 @@ class MatmulOp:
             "SR": 0,
         }
 
-    def generate_output(self, lhs, rhs):
-        return ShardSpec(self.output_map[ShardSpec(lhs).spec]).id
+    def generate_input_z3(self):
+        self.lhs = z3.BitVec(f"{self.name}_lhs", 2)  # input
+        self.rhs = z3.BitVec(f"{self.name}_rhs", 2)  # weight
 
-    def generate_output_z3(self, lhs, rhs):
+        compute_constraints = [
+            z3.Or(
+                [
+                    z3.And(
+                        self.lhs == ShardSpec("RR").id, self.rhs == ShardSpec("RS").id
+                    ),
+                    z3.And(
+                        self.lhs == ShardSpec("RS").id, self.rhs == ShardSpec("SR").id
+                    ),
+                    z3.And(
+                        self.lhs == ShardSpec("SR").id, self.rhs == ShardSpec("RR").id
+                    ),
+                ]
+            )
+        ]
+        format_constraints = [z3.ULE(self.lhs, 3), z3.ULE(self.rhs, 3)]
+        constraints = compute_constraints + format_constraints
+        # force to shard
+        # constraints += [self.lhs != ShardSpec("RR").id, self.rhs != ShardSpec("RR").id]
+        return [self.lhs, self.rhs], constraints
+
+    def set_concrete_values(self, lhs, rhs):
+        self.lhs_v = lhs
+        self.rhs_v = rhs
+
+    def generate_output(self):
+        return ShardSpec(self.output_map[ShardSpec(self.lhs_v).spec]).id
+
+    def generate_output_z3(self):
         result = 3  # invalid
         for inp, out in self.output_map.items():
-            result = z3.If(lhs == ShardSpec(inp).id, ShardSpec(out).id, result)
+            result = z3.If(self.lhs == ShardSpec(inp).id, ShardSpec(out).id, result)
         return result
 
-    def calculate_comm_cost(self, lhs, rhs):
-        return self.comm_cost_map[ShardSpec(lhs).spec]
+    def calculate_comm_cost(self):
+        return self.comm_cost_map[ShardSpec(self.lhs_v).spec]
 
-    def calculate_comm_cost_z3(self, lhs, rhs):
+    def calculate_comm_cost_z3(self):
         result = 1e12  # invalid
         for inp, cost in self.comm_cost_map.items():
-            result = z3.If(lhs == ShardSpec(inp).id, cost, result)
+            result = z3.If(self.lhs == ShardSpec(inp).id, cost, result)
         return result
 
 
@@ -71,10 +156,9 @@ class Solver:
     def __init__(self, gm, p) -> None:
         self.gm = gm
         self.named_modules = dict(self.gm.named_modules())
-        self.z3_graph = []
+        self.z3_graph = {}  # {node_name: FxOp}
         self.goal = []
         self.cost = None
-        self.shard_spec = {}  # {node_name: shard_spec}
         self.num_devices = p
         self.reshard_cost_map = {
             "RR": {"RR": 0, "RS": 0, "SR": 0},
@@ -108,96 +192,82 @@ class Solver:
             result = z3.If(prev == ShardSpec(in_spec).id, tmp, result)
         return result
 
-    def construct_z3_problem(self):
-        bitvecs = {}
-        input_constraints = []
-        format_constraints = []
-        outputs = []
-        comm_costs = []
-        for op in self.z3_graph:
-            # no need to include output, since output can be obtained from inputs
-            name = op.name
-            lhs = z3.BitVec(f"{name}_lhs", 2)  # input
-            rhs = z3.BitVec(f"{name}_rhs", 2)  # weight
-            bitvecs[f"{name}_lhs"] = lhs
-            bitvecs[f"{name}_rhs"] = rhs
-
-            # input constraints
-            constraints = [
-                z3.And(lhs == ShardSpec("RR").id, rhs == ShardSpec("RS").id),
-                z3.And(lhs == ShardSpec("RS").id, rhs == ShardSpec("SR").id),
-                z3.And(lhs == ShardSpec("SR").id, rhs == ShardSpec("RR").id),
-            ]
-            input_constraints.append(z3.Or(*constraints))
-
-            # format constraints
-            format_constraints.extend([z3.ULE(lhs, 3), z3.ULE(rhs, 3)])
-
-            # output
-            outputs.append(op.generate_output_z3(lhs, rhs))
-
-            # communication cost
-            comm_costs.append(op.calculate_comm_cost_z3(lhs, rhs))
-
-        reshard_costs = []
-        for i, op in enumerate(self.z3_graph):
-            prev = outputs[i]
-            curr = (
-                bitvecs[f"{self.z3_graph[i + 1].name}_lhs"]
-                if i < len(self.z3_graph) - 1
-                else ShardSpec("RR").id
-            )
-            reshard_costs.append(
-                self.calculate_reshard_cost_z3(prev, curr, op.out_size)
-            )
-
-        self.cost = sum(comm_costs) + sum(reshard_costs)
-
-        # input should not be sharded
-        self.goal += [bitvecs[f"{self.z3_graph[0].name}_lhs"] == ShardSpec("RR").id]
-        for op in self.z3_graph:
-            if op.node.args[0].op == "placeholder":
-                self.goal += [bitvecs[f"{op.name}_lhs"] == ShardSpec("RR").id]
-                print(f"{op.name}_lhs should be RR")
-        self.goal += input_constraints
-        self.goal += format_constraints
-
-    def solve(self, inputs):
-        self.inference_shape(inputs)
+    def construct_z3_graph(self):
+        print(self.gm.graph)
         for node in self.gm.graph.nodes:
             if node.op == "placeholder":  # input
-                continue
+                new_op = PlaceholderOp(node)
             elif node.op == "call_module":
                 mod = self.named_modules[node.target]
                 if isinstance(mod, nn.Linear):
-                    self.z3_graph.append(
-                        MatmulOp(
-                            node,
-                            node.name,
-                            node.args[0].meta["tensor_meta"].shape,
-                            mod.weight.shape,
-                            node.meta["tensor_meta"].shape
-                            if not isinstance(node.meta["tensor_meta"], list)
-                            else node.meta["tensor_meta"][0].shape,
-                            transposed=True,
-                        )
+                    new_op = MatmulOp(
+                        node,
+                        mod=mod,
+                        is_linear=True,
                     )
+                else:
+                    raise RuntimeError(f"Unsupported module: {node.target}")
             elif node.op == "call_function":
                 if node.target == torch.matmul:
-                    self.z3_graph.append(
-                        MatmulOp(
-                            node,
-                            node.name,
-                            node.args[0].meta["tensor_meta"].shape,
-                            node.args[1].meta["tensor_meta"].shape,
-                            node.meta["tensor_meta"].shape,
-                        )
+                    new_op = MatmulOp(node)
+                else:
+                    new_op = ElementwiseOp(node)
+            else:  # output
+                continue
+            # construct edges
+            for arg in node.args:
+                new_op.add_arg(self.z3_graph[arg.name])
+                self.z3_graph[arg.name].add_user(new_op)
+            self.z3_graph[node.name] = new_op
+        print(self.z3_graph)
+
+    def construct_z3_problem(self):
+        bitvecs = {}
+        input_constraints = []
+        comm_costs = []
+        for op in self.z3_graph.values():
+            # no need to include output, since output can be obtained from inputs
+            inputs, constraints = op.generate_input_z3()
+            for inp in inputs:
+                bitvecs[str(inp)] = inp
+            # input constraints
+            input_constraints.extend(constraints)
+            # communication cost
+            comm_costs.append(op.calculate_comm_cost_z3())
+
+        reshard_costs = []
+        for op in self.z3_graph.values():
+            assert (
+                len(op.args) <= 1
+            ), f"only support single input, but got multiple ({len(op.args)})"
+            if not isinstance(op, MatmulOp):
+                continue
+            for arg in op.args:
+                curr = bitvecs[op.name + "_lhs"]
+                prev = arg.generate_output_z3()
+                reshard_costs.append(
+                    self.calculate_reshard_cost_z3(prev, curr, arg.out_size)
+                )
+            # final output should not be sharded
+            if len(op.users) == 0:
+                next_inp = ShardSpec("RR").id
+                reshard_costs.append(
+                    self.calculate_reshard_cost_z3(
+                        op.generate_output_z3(), next_inp, op.out_size
                     )
+                )
+
+        self.cost = sum(comm_costs) + sum(reshard_costs)
+        self.goal += input_constraints
+
+    def solve(self, inputs, max_iter=100):
+        self.inference_shape(inputs)
+        self.construct_z3_graph()
         self.construct_z3_problem()
         sol = z3.Solver()
         sol.add(self.goal)
         max_cost = 1e12
-        for it in range(10):
+        for it in range(max_iter):
             print(f"=================== Iter {it} ===================")
             sol.push()
             assert self.cost is not None
@@ -211,34 +281,46 @@ class Solver:
             print(mod)
             results = {d.name(): mod[d] for d in mod.decls()}
             max_cost = 0
-            for i, op in enumerate(self.z3_graph):
-                name = op.name
+            for name, op in self.z3_graph.items():
+                if not isinstance(op, MatmulOp):
+                    continue
                 lhs = results[f"{name}_lhs"]
                 rhs = results[f"{name}_rhs"]
-                output = op.generate_output(lhs, rhs)
+                op.set_concrete_values(lhs, rhs)
+                output = op.generate_output()
                 print(f"{name}: {op.lhs_shape} x {op.rhs_shape} = {op.out_shape}")
                 print(
                     f"  {name}: {ShardSpec(lhs)} x {ShardSpec(rhs)} = {ShardSpec(output)}"
                 )
-                comm_cost = op.calculate_comm_cost(lhs, rhs)
-                next_inp = (
-                    results[f"{self.z3_graph[i + 1].name}_lhs"]
-                    if i < len(self.z3_graph) - 1
-                    else ShardSpec("RR").id
-                )
-                reshard_cost = self.calculate_reshard_cost(
-                    output, next_inp, op.out_size
-                )
-                max_cost += comm_cost + reshard_cost
-                print(f"  Comm cost: {comm_cost}, reshard cost: {reshard_cost}")
+                comm_cost = op.calculate_comm_cost()
+                max_cost += comm_cost
+                print(f"  Comm cost: {comm_cost}")
+                for arg in op.args:
+                    curr = lhs
+                    prev = arg.generate_output()
+                    reshard_cost = self.calculate_reshard_cost(prev, curr, arg.out_size)
+                    max_cost += reshard_cost
+                    print(
+                        f"  Resharding cost ({arg.name}) {ShardSpec(prev)} -> {ShardSpec(curr)}: {reshard_cost}"
+                    )
+                if len(op.users) == 0:
+                    next_inp = ShardSpec("RR").id
+                    reshard_cost = self.calculate_reshard_cost(
+                        output, next_inp, op.out_size
+                    )
+                    max_cost += reshard_cost
+                    print(
+                        f"  Last resharding cost {ShardSpec(output)} -> {ShardSpec(next_inp)}: {reshard_cost}"
+                    )
             print("Total cost:", max_cost)
             sol.pop()
         # generate sharding sequence
         self.best_spec = results
         print()
         print("Best solution:")
-        for op in self.z3_graph:
-            name = op.name
+        for name, op in self.z3_graph.items():
+            if not isinstance(op, MatmulOp):
+                continue
             weight = self.best_spec[f"{name}_rhs"]
             if weight == ShardSpec("RS").id:
                 dim = 0  # transposed
