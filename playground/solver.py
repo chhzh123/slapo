@@ -1,8 +1,11 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import operator
 import torch
-import torch.nn as nn
+from torch import nn
+from torch import fx
+import torch.nn.functional as F
 from torch.fx.passes.shape_prop import ShapeProp
 import z3
 
@@ -70,6 +73,34 @@ class ElementwiseOp(FxOp):
 
     def calculate_comm_cost_z3(self):
         return 0
+
+
+class BinaryOp(FxOp):
+    pass
+
+
+class LayerNormOp(FxOp):
+    pass
+
+
+class SoftmaxOp(FxOp):
+    pass
+
+
+class ViewOp(FxOp):
+    pass
+
+
+class PermuteOp(FxOp):
+    pass
+
+
+class TransposeOp(FxOp):
+    pass
+
+
+class DropoutOp(FxOp):
+    pass
 
 
 class MatmulOp(FxOp):
@@ -155,6 +186,7 @@ class MatmulOp(FxOp):
 class Solver:
     def __init__(self, gm, p) -> None:
         self.gm = gm
+        self.gm.graph.eliminate_dead_code()
         self.named_modules = dict(self.gm.named_modules())
         self.z3_graph = {}  # {node_name: FxOp}
         self.goal = []
@@ -195,6 +227,8 @@ class Solver:
     def construct_z3_graph(self):
         print(self.gm.graph)
         for node in self.gm.graph.nodes:
+            if "tensor_meta" not in node.meta:
+                continue
             if node.op == "placeholder":  # input
                 new_op = PlaceholderOp(node)
             elif node.op == "call_module":
@@ -205,19 +239,48 @@ class Solver:
                         mod=mod,
                         is_linear=True,
                     )
+                elif isinstance(mod, nn.LayerNorm):
+                    new_op = LayerNormOp(node)
+                elif isinstance(mod, nn.Dropout):
+                    new_op = DropoutOp(node)
                 else:
                     raise RuntimeError(f"Unsupported module: {node.target}")
             elif node.op == "call_function":
                 if node.target == torch.matmul:
                     new_op = MatmulOp(node)
-                else:
+                elif node.target == F.softmax:
+                    new_op = SoftmaxOp(node)
+                elif node.target in [
+                    F.relu,
+                    F.gelu,
+                    torch._C._nn.gelu,
+                    operator.truediv,
+                ]:
                     new_op = ElementwiseOp(node)
+                elif node.target in [operator.add]:
+                    new_op = BinaryOp(node)
+                else:
+                    raise RuntimeError(f"Unsupported function: {node.target}")
+            elif node.op == "call_method":
+                if node.target == "view":
+                    new_op = ViewOp(node)
+                elif node.target == "permute":
+                    new_op = PermuteOp(node)
+                elif node.target == "transpose":
+                    new_op = TransposeOp(node)
+                elif node.target == "contiguous":
+                    continue
+                else:
+                    raise RuntimeError(f"Unsupported method: {node.target}")
             else:  # output
                 continue
             # construct edges
-            for arg in node.args:
-                new_op.add_arg(self.z3_graph[arg.name])
-                self.z3_graph[arg.name].add_user(new_op)
+            if not (node.op == "call_method" and node.target == "view"):
+                for arg in node.args:
+                    if not isinstance(arg, fx.Node):
+                        continue
+                    new_op.add_arg(self.z3_graph[arg.name])
+                    self.z3_graph[arg.name].add_user(new_op)
             self.z3_graph[node.name] = new_op
         print(self.z3_graph)
 
@@ -263,6 +326,7 @@ class Solver:
     def solve(self, inputs, max_iter=100):
         self.inference_shape(inputs)
         self.construct_z3_graph()
+        sys.exit()
         self.construct_z3_problem()
         sol = z3.Solver()
         sol.add(self.goal)
