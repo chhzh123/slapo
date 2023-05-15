@@ -454,6 +454,7 @@ class Solver:
             results = {d.name(): mod[d] for d in mod.decls()}
             max_cost = 0
             for name, op in self.z3_graph.items():
+                flag = True
                 if isinstance(op, (MatmulOp, BinaryOp)):
                     lhs = results[f"{name}_0"]
                     rhs = results[f"{name}_1"]
@@ -473,18 +474,21 @@ class Solver:
                     inp = results[f"{name}_0"]
                     op.set_concrete_values(inp)
                     output = op.generate_output()
-                    print(f"{name}: {ShardSpec(inp)} = {ShardSpec(output)}")
+                    print(f"{name}: {ShardSpec(inp)} -> {ShardSpec(output)}")
                 else:
-                    continue
-                # resharding cost
-                for arg in op.args:
-                    curr = results[f"{name}_0"]
-                    prev = arg.generate_output()
-                    reshard_cost = self.calculate_reshard_cost(prev, curr, arg.out_size)
-                    max_cost += reshard_cost
-                    print(
-                        f"  Resharding cost ({arg.name}) {ShardSpec(prev)} -> {ShardSpec(curr)}: {reshard_cost}"
-                    )
+                    continue  # flag = False
+                if flag:
+                    # resharding cost
+                    for i, arg in enumerate(op.args):
+                        curr = results[f"{name}_{i}"]
+                        prev = arg.generate_output()
+                        reshard_cost = self.calculate_reshard_cost(
+                            prev, curr, arg.out_size
+                        )
+                        max_cost += reshard_cost
+                        print(
+                            f"  Resharding cost ({arg.name}) {ShardSpec(prev)} -> {ShardSpec(curr)}: {reshard_cost}"
+                        )
                 if len(op.users) == 0:
                     next_inp = ShardSpec("RR").id
                     reshard_cost = self.calculate_reshard_cost(
@@ -498,7 +502,6 @@ class Solver:
             sol.pop()
         # generate sharding sequence
         self.best_spec = results
-        sys.exit()
         print()
         print("Best solution:")
         for name, op in self.z3_graph.items():
