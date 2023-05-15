@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import slapo
 import torch.distributed as dist
-from slapo.utils.report import profile_perf
 import logging
 import sys
 import argparse
@@ -30,6 +29,10 @@ class MLP(nn.Module):
 def perf_model(mod, input_tensor, times):
     """Measure the performance of a mod with certain resharding schemes
     """
+    # warmup
+    for _ in range(5):
+        mod(input_tensor)
+
     start_event.record()
     for _ in range(times):
         mod(input_tensor)

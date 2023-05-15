@@ -381,7 +381,8 @@ if __name__ == "__main__":
 
     input_tensor = torch.randn(BS, SEQ, D, device=device)
 
-    mods = [mod_1, mod_2, mod_4, mod_8, mod_5, mod_3, mod_6, mod_7]
+    # mods = [mod_1, mod_2, mod_4, mod_8, mod_5, mod_3, mod_6, mod_7]
+    mods = [mod_1, mod_2, mod_4, mod_8, mod_5]
 
     for mod in mods:
         perf_model(mod, input_tensor)
