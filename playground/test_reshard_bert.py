@@ -156,6 +156,29 @@ torch.cuda.empty_cache()
 # 4. Activation Sharding. SR x RR = SR
 sch = slapo.create_schedule(copy.deepcopy(model))
 
+def reshard_RR_to_SR(input):
+    """Reshard from RR to SR
+    input: torch.Tensor
+    """
+    # [8, 512, 2048] -> [8, 256, 2048]
+    in_tensor = input
+    # get the current rank's tensor. Slice across the 2nd last dimension
+    shard_dim_size = in_tensor.shape[-2] // dist.get_world_size()
+    start_idx = (int)(dist.get_rank() * shard_dim_size)
+    end_idx = (int)((dist.get_rank() + 1) * shard_dim_size)
+
+    slices = [slice(None)] * len(in_tensor.shape)
+    slices[-2] = slice(start_idx, end_idx)
+
+    # Slice the tensor
+    ret = in_tensor[slices]
+    return ret
+
+
+def reshard_and_add(dropout, hidden_states):
+    return dropout + reshard_RR_to_SR(hidden_states)
+
+
 for i in range(12):
     # shard attention
     subsch = sch[f"bert.encoder.layer.{i}.attention.self"]
@@ -168,14 +191,9 @@ for i in range(12):
     fix_attention_mask_shape(subsch)
     subsch = sch[f"bert.encoder.layer.{i}.attention.output"]
 
-    if dist.get_rank == 0:
-        subsch.trace(recursive=False, flatten=False, tracer="pytorch")
-        print(subsch.mod.graph)   
-        ops = subsch.find_node(lambda node: node.op == "call_function" and node.target == operator.add)
-        print(ops)
-    # synchronize all ranks
-    sys.exit(0)
-
+    subsch.trace(recursive=False, flatten=False, tracer="pytorch")
+    ops = subsch.find_node(lambda node: node.op == "call_function" and node.target == operator.add)
+    subsch.replace(reshard_and_add, ops[0])
 
     # shape here: [4096, 256](RS). Need to matmul with [1024, 1024] (without shard)
     subsch["dense"].sync("fwd_pre", sync_op_or_fn=reshard_RS_to_SR_pre) # LayerNorm will crash for SR x RR = SR

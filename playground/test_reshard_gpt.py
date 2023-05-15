@@ -142,10 +142,10 @@ for i in range(12):
     subsch["k_proj"].shard("weight", axis=0)
     subsch["v_proj"].shard("weight", axis=0)
     # RS here
-    # subsch["out_proj"].sync("fwd_pre", sync_op_or_fn=reshard_RS_to_RR_pre)
-    # subsch["out_proj"].shard("weight", axis=0) # RR x RS = RS
-    # subsch["out_proj"].shard("bias", axis=0)
-    # subsch["out_proj"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR_post)
+    subsch["out_proj"].sync("fwd_pre", sync_op_or_fn=reshard_RS_to_RR_pre)
+    subsch["out_proj"].shard("weight", axis=0) # RR x RS = RS
+    subsch["out_proj"].shard("bias", axis=0)
+    subsch["out_proj"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR_post)
     # shard MLP
     subsch = sch[f"h.{i}.mlp"]
     subsch["c_fc"].shard("weight", axis=0)
@@ -154,6 +154,7 @@ for i in range(12):
     subsch["c_proj"].shard("weight", axis=0)
     subsch["c_proj"].shard("bias", axis=0)
     subsch["c_proj"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR_post)
+fix_attention_mask_shape(sch)
 
 mod_3, _ = slapo.build(sch, init_weights=model._init_weights)
 mod_3.to(device)
