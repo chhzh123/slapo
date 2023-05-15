@@ -16,19 +16,30 @@ import torch.distributed as dist
 from slapo.utils.report import profile_perf
 import logging
 import sys
+import argparse
+
+# Create parser
+parser = argparse.ArgumentParser(description="Resharding schemes on MLP")
+# Add arguments
+parser.add_argument('--times', type=int, required=True, help='Number of times to run the model')
+parser.add_argument('--bs', type=int, required=True, help='Batch size')
+parser.add_argument('--seq', type=int, help='Sequence length', default=1024)
+parser.add_argument('--d', type=int, help='Model size', default=2048)
+parser.add_argument('--p', type=int, help='Number of processes', default=4)
+# Parse the arguments
+args = parser.parse_args()
 
 # profile time breakdown
 PROFILE = False
 
-NUM_PROC = 4
+NUM_PROC = args.p
 
 # Input and Model Size
-SEQ = 1024
-D = 2048
-
+SEQ = args.seq
+D = args.d
 # Performance Testing
-TIMES = 10
-BS = 8
+TIMES = args.times
+BS = args.bs
 
 if PROFILE:
     # Setup Logger
@@ -363,14 +374,16 @@ def perf_model(mod, input_tensor, times=TIMES):
     end_event.record()
     torch.cuda.synchronize()
     if dist.get_rank() == 0:
-        print(f"{start_event.elapsed_time(end_event) / 1000}")
+        print(f"{start_event.elapsed_time(end_event) / times:.3f} ms")
 
-
-
+if dist.get_rank() == 0:
+    print("\n===== Setting ======")
+    print(f"Number of GPUs: {dist.get_world_size()}; BS: {BS}, SEQ: {SEQ}, D: {D}, TIMES: {TIMES}\n")
 
 input_tensor = torch.randn(BS, SEQ, D, device=device)
-# Mod 1: Naive
-mods = [mod_1, mod_2, mod_4, mod_8, mod_5, mod_3, mod_6, mod_7]
+
+# mods = [mod_1, mod_2, mod_4, mod_8, mod_5, mod_3, mod_6, mod_7]
+mods = [mod_4, mod_8, mod_5, mod_3, mod_6, mod_7]
 
 for mod in mods:
     perf_model(mod, input_tensor)
