@@ -1,0 +1,25 @@
+#!/bin/bash
+#SBATCH -N 1
+#SBATCH -C cpu&gpu
+#SBATCH -G 4
+#SBATCH -q regular
+#SBATCH -t 00:15:00
+#SBATCH -A m4341
+
+# BERT-large Setting. SEQ = 512; D = 1024. 
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=4000 --bs=1 --seq=512 --d=1024
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=1000 --bs=4 --seq=512 --d=1024
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=1000 --bs=16 --seq=512 --d=1024
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=500 --bs=64 --seq=512 --d=1024
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=250 --bs=256 --seq=512 --d=1024
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=100 --bs=512 --seq=512 --d=1024
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=10 --bs=1024 --seq=512 --d=1024
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=10 --bs=2048 --seq=512 --d=1024 # OOM for naive
+
+# GPT-3 Setting. SEQ = 1024; D = 2048. 
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=1000 --bs=1 --seq=1024 --d=2048
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=500 --bs=4 --seq=1024 --d=2048
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=250 --bs=16 --seq=1024 --d=2048
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=125 --bs=64 --seq=1024 --d=2048
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=60 --bs=256 --seq=1024 --d=2048
+torchrun --nproc-per-node=4 perf_reshard_mlp.py --times=10 --bs=512 --seq=1024 --d=2048 # OOM
