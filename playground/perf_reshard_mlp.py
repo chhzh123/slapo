@@ -1,7 +1,8 @@
 from util_reshard_mlp \
-    import reshard_RS_to_SR, reshard_SR_to_RS, reshard_RS_to_SR_to_RS, \
-    reshard_SR_to_RR, reshard_RS_to_RR, \
-    reshard_RR_to_RS, reshard_RR_to_RS_pre, reshard_RR_to_SR, reshard_RR_to_SR_pre
+    import reshard_RS_to_SR_post, reshard_SR_to_RS_post, \
+    reshard_SR_to_RR_post, reshard_RS_to_RR_post, \
+    reshard_RR_to_RS_post, reshard_RR_to_RS_pre, \
+    reshard_RR_to_SR_post, reshard_RR_to_SR_pre
 
 import copy
 import time
@@ -100,8 +101,8 @@ if __name__ == "__main__":
     sch = slapo.create_schedule(mlp_2)
     sch["fc1"].shard("weight", axis=0)
     sch["fc1"].shard("bias", axis=0)
-    sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_SR)
-    sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR)
+    sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_SR_post)
+    sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR_post)
     mod_2, _ = slapo.build(sch)
 
     # 4. Megatron. RR * RS -> RS; RS * SR -> RR (with all reduce)
@@ -117,7 +118,7 @@ if __name__ == "__main__":
     mlp_8 = copy.deepcopy(mlp).to(device=device)
     sch = slapo.create_schedule(mlp_8)
     sch["fc1"].sync("fwd_pre", sync_op_or_fn=reshard_RR_to_SR_pre)
-    sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR)
+    sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR_post)
     mod_8, _ = slapo.build(sch)
 
     # 5. RR * RS -> RS; RS -> RR (reshard); RR * RS -> RS; RS -> RR (reshard)
@@ -125,10 +126,10 @@ if __name__ == "__main__":
     sch = slapo.create_schedule(mlp_5)
     sch["fc1"].shard("weight", axis=0)
     sch["fc1"].shard("bias", axis=0)
-    sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR)
+    sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR_post)
     sch["fc2"].shard("weight", axis=0)
     sch["fc2"].shard("bias", axis=0)
-    sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR)
+    sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR_post)
     mod_5, _ = slapo.build(sch)
 
 

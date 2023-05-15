@@ -26,11 +26,11 @@ class MLP(nn.Module):
 
     def forward(self, x):
         x = self.fc1(x)
-        x = F.relu(x)
+        x = F.gelu(x)
         x = self.fc2(x)
         return x
 
-def reshard_RS_to_SR(_module, _input, output):
+def reshard_RS_to_SR_post(_module, _input, output):
     """Reshard from RS to SR
     """
 
@@ -56,7 +56,33 @@ def reshard_RS_to_SR(_module, _input, output):
     ret = torch.cat(gather_list, dim=-1)
     return ret
 
-def reshard_SR_to_RS(_module, _input, output):
+def reshard_RS_to_SR_pre(_module, input):
+    """Reshard from RS to SR
+    """
+
+    in_tensor = input[0]
+    in_shape = in_tensor.shape
+    chunk_shape = list(in_shape[:-2]) + [in_shape[-2] // dist.get_world_size(), in_shape[-1]] # [8, 256, 2048]
+
+    splitted_tensor = torch.split(in_tensor, in_shape[-2] // dist.get_world_size(), dim=-2)
+
+    for i in range(dist.get_world_size()):
+        send_tensor = splitted_tensor[i].contiguous()
+
+        if dist.get_rank() != i:
+            dist.gather(send_tensor, dst=i, async_op=True)  # send
+        else:
+            gather_list = [
+                torch.empty(chunk_shape, dtype=in_tensor.dtype, device=in_tensor.device)
+                for _ in range(dist.get_world_size())
+            ]
+            handle = dist.gather(send_tensor, gather_list, dst=i, async_op=True)  # recv
+    handle.wait()
+
+    ret = torch.cat(gather_list, dim=-1)
+    return ret
+
+def reshard_SR_to_RS_post(_module, _input, output):
     """Reshard from SR to RS
     """
     in_tensor = output
@@ -82,14 +108,41 @@ def reshard_SR_to_RS(_module, _input, output):
     ret = torch.cat(gather_list, dim=-2) # [8, 512, 2048]
     return ret
 
-def reshard_RS_to_SR_to_RS(_module, _input, output):
+def reshard_SR_to_RS_pre(_module, input):
+    """Reshard from SR to RS
+    """
+    in_tensor = input[0]
+    in_shape = in_tensor.shape # [8, 256, 4096]
+    # chunk shape = [8, 256, 4096 // p]
+    chunk_shape = list(in_shape[:-1]) + [in_shape[-1] // dist.get_world_size()] # [8, 256, 2048]
+    
+    splitted_tensor = torch.split(in_tensor, in_shape[-1] // dist.get_world_size(), dim=-1) # [8, 256, 2048]
+    
+    for i in range(dist.get_world_size()):
+        send_tensor = splitted_tensor[i].contiguous()
+
+        if dist.get_rank() != i:
+            dist.gather(send_tensor, dst=i, async_op=True)  # send
+        else:
+            gather_list = [
+                torch.empty(chunk_shape, dtype=in_tensor.dtype, device=in_tensor.device)
+                for _ in range(dist.get_world_size())
+            ]
+            handle = dist.gather(send_tensor, gather_list, dst=i, async_op=True)
+    handle.wait()
+
+    ret = torch.cat(gather_list, dim=-2) # [8, 512, 2048]
+    return ret
+
+
+def reshard_RS_to_SR_to_RS_post(_module, _input, output):
     in_tensor = output
-    sr_tensor = reshard_RS_to_SR(_, _, in_tensor)
-    rs_tensor = reshard_SR_to_RS(_, _, sr_tensor)
+    sr_tensor = reshard_RS_to_SR_post(_, _, in_tensor)
+    rs_tensor = reshard_SR_to_RS_post(_, _, sr_tensor)
     return rs_tensor
 
 
-def reshard_SR_to_RR(_module, _input, output):
+def reshard_SR_to_RR_post(_module, _input, output):
     """Reshard from SR to RR
     """
     in_tensor = output # [8, 256, 1024]
@@ -106,7 +159,24 @@ def reshard_SR_to_RR(_module, _input, output):
     ret = ret.transpose(0, -2).contiguous() # [8, 512 1024]
     return ret
 
-def reshard_RS_to_RR(_module, _input, output):
+def reshard_SR_to_RR_pre(_module, input):
+    """Reshard from SR to RR
+    """
+    in_tensor = input[0]
+
+    temp = in_tensor.transpose(0, -2) # [256, 8, 1024]
+    temp = temp.contiguous()
+    gather_shape = list(temp.shape) # [256, 8, 1024]
+
+    gather_shape[0] = dist.get_world_size() * gather_shape[0] # [512, 8, 1024]
+
+    ret = torch.empty(gather_shape, dtype=temp.dtype, device=in_tensor.device)
+    dist.all_gather_into_tensor(ret, temp) # [512, 8, 1024]
+
+    ret = ret.transpose(0, -2).contiguous() # [8, 512 1024]
+    return ret
+
+def reshard_RS_to_RR_post(_module, _input, output):
     """Reshard from RS to RR
     """
     # [8, 512, 1024] -> [8, 512, 2048]
@@ -121,7 +191,22 @@ def reshard_RS_to_RR(_module, _input, output):
     ret = ret.transpose(0, -1).contiguous() # [8, 512, 2048]
     return ret
 
-def reshard_RR_to_RS(_module, _input, output):
+def reshard_RS_to_RR_pre(_module, input):
+    """Reshard from RS to RR
+    """
+    # [8, 512, 1024] -> [8, 512, 2048]
+    in_tensor = input[0]
+    temp = in_tensor.transpose(0, -1).contiguous() # [1024, 512, 8]
+    gather_shape = list(temp.shape)
+    
+    gather_shape[0] = dist.get_world_size() * gather_shape[0] # [2048, 512, 8]
+
+    ret = torch.empty(gather_shape, dtype=temp.dtype, device=in_tensor.device)
+    dist.all_gather_into_tensor(ret, temp) # [2048, 512, 8]
+    ret = ret.transpose(0, -1).contiguous() # [8, 512, 2048]
+    return ret
+
+def reshard_RR_to_RS_post(_module, _input, output):
     """Reshard from RR to RS
     """
     # [8, 512, 2048] -> [8, 512, 1024]
@@ -156,7 +241,7 @@ def reshard_RR_to_RS_pre(_module, input):
     return ret
 
 
-def reshard_RR_to_SR(_module, _input, output):
+def reshard_RR_to_SR_post(_module, _input, output):
     """Reshard from RR to SR
     """
     # [8, 512, 2048] -> [8, 256, 2048]
@@ -283,8 +368,8 @@ if __name__ == "__main__":
     with slapo.Verify(sch, [input_tensor_verf]):
         sch["fc1"].shard("weight", axis=0)
         sch["fc1"].shard("bias", axis=0)
-        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_SR)
-        sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR)
+        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_SR_post)
+        sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR_post)
     mod_2, _ = slapo.build(sch)
 
     # 3. RR * RS -> RS; RS -> SR (reshard); SR -> RS (reshard); RS * SR -> RR (with all reduce)
@@ -295,7 +380,7 @@ if __name__ == "__main__":
     with slapo.Verify(sch, [input_tensor_verf]):
         sch["fc1"].shard("weight", axis=0)
         sch["fc1"].shard("bias", axis=0)
-        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_SR_to_RS)
+        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_SR_to_RS_post)
         sch["fc2"].shard("weight", axis=1)
         sch["fc2"].sync("fwd_post", sync_op_or_fn="all_reduce")
     mod_3, _ = slapo.build(sch)
@@ -320,10 +405,10 @@ if __name__ == "__main__":
     with slapo.Verify(sch, [input_tensor_verf]):
         sch["fc1"].shard("weight", axis=0)
         sch["fc1"].shard("bias", axis=0)
-        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR)
+        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR_post)
         sch["fc2"].shard("weight", axis=0)
         sch["fc2"].shard("bias", axis=0)
-        sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR)
+        sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR_post)
     mod_5, _ = slapo.build(sch)
 
     # 6. RR * RR -> RR; RR -> RS (reshard); RS * SR -> RR (with all reduce)
@@ -332,7 +417,7 @@ if __name__ == "__main__":
     mlp_6 = copy.deepcopy(mlp).to(device=device)
     sch = slapo.create_schedule(mlp_6)
     with slapo.Verify(sch, [input_tensor_verf]):
-        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RR_to_RS)
+        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RR_to_RS_post)
         sch["fc2"].shard("weight", axis=1)
         sch["fc2"].sync("fwd_post", sync_op_or_fn="all_reduce")
     mod_6, _ = slapo.build(sch)
@@ -343,8 +428,8 @@ if __name__ == "__main__":
     mlp_7 = copy.deepcopy(mlp).to(device=device)
     sch = slapo.create_schedule(mlp_7)
     with slapo.Verify(sch, [input_tensor_verf]):
-        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RR_to_SR)
-        sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR)
+        sch["fc1"].sync("fwd_post", sync_op_or_fn=reshard_RR_to_SR_post)
+        sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR_post)
     mod_7, _ = slapo.build(sch)
 
     # 8. RR -> SR (reshard); SR * RR -> SR; SR * RR -> SR; SR -> RR (reshard)
@@ -354,7 +439,7 @@ if __name__ == "__main__":
     sch = slapo.create_schedule(mlp_8)
     with slapo.Verify(sch, [input_tensor_verf]):
         sch["fc1"].sync("fwd_pre", sync_op_or_fn=reshard_RR_to_SR_pre)
-        sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR)
+        sch["fc2"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR_post)
     mod_8, _ = slapo.build(sch)
 
 
