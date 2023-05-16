@@ -138,7 +138,7 @@ if __name__ == "__main__":
     # 3. Weight Sharding. RR x RS = RS
     sch = slapo.create_schedule(copy.deepcopy(model))
 
-    for i in range(12):
+    for i in range(24):
         # shard attention
         subsch = sch[f"bert.encoder.layer.{i}.attention.self"]
         subsch["query"].shard("weight", axis=0)
@@ -197,7 +197,7 @@ if __name__ == "__main__":
         return dropout + reshard_hidden_states
 
 
-    for i in range(12):
+    for i in range(24):
         # shard attention
         subsch = sch[f"bert.encoder.layer.{i}.attention.self"]
         subsch["query"].shard("weight", axis=0)
