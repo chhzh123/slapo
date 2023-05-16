@@ -108,7 +108,7 @@ if __name__ == "__main__":
     # 2. Slapo-Megatron
     sch = slapo.create_schedule(copy.deepcopy(model))
 
-    for i in range(12):
+    for i in range(24):
         # shard attention
         subsch = sch[f"bert.encoder.layer.{i}.attention.self"]
         subsch["query"].shard("weight", axis=0)
