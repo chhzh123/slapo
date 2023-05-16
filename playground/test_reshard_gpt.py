@@ -124,7 +124,6 @@ def fix_attention_mask_shape_replace_add(sch):
                         and isinstance(node.args[0], fx.Node)
                         and node.args[0].op == "call_module"
                         and "dropout" in node.args[0].target)
-    print(ops)
     for op in ops:
         sch.replace(reshard_and_add, op)
     
@@ -133,7 +132,6 @@ def fix_attention_mask_shape_replace_add(sch):
                         and isinstance(node.args[1], fx.Node)
                         and node.args[1].op == "call_module"
                         and "dropout" in node.args[1].target)
-    print(ops)
     for op in ops:
         sch.replace(add_and_gather, op)
 
@@ -171,18 +169,19 @@ def reshard_SR_to_RR(input):
     """Reshard from SR to RR
     input: torch.Tensor
     """
-    in_tensor = input
-    # get the current rank's tensor. Slice across the 2nd last dimension
-    shard_dim_size = in_tensor.shape[-2] // dist.get_world_size()
-    start_idx = (int)(dist.get_rank() * shard_dim_size)
-    end_idx = (int)((dist.get_rank() + 1) * shard_dim_size)
+    in_tensor = input # [8, 256, 1024]
 
-    slices = [slice(None)] * len(in_tensor.shape)
-    slices[-2] = slice(start_idx, end_idx)
+    temp = in_tensor.transpose(0, -2) # [256, 8, 1024]
+    temp = temp.contiguous()
+    gather_shape = list(temp.shape) # [256, 8, 1024]
 
-    # Slice the tensor
-    ret = in_tensor[slices]
-    return ret       
+    gather_shape[0] = dist.get_world_size() * gather_shape[0] # [512, 8, 1024]
+
+    ret = torch.empty(gather_shape, dtype=temp.dtype, device=in_tensor.device)
+    dist.all_gather_into_tensor(ret, temp) # [512, 8, 1024]
+
+    ret = ret.transpose(0, -2).contiguous() # [8, 512 1024]
+    return ret   
 
 
 if __name__ == "__main__":
@@ -221,12 +220,12 @@ if __name__ == "__main__":
     input_ids = torch.ones(BS, SEQ, dtype=torch.long, device=device)
 
     # 1. Naive
-    # sch = slapo.create_schedule(model)
-    # mod_1, _ = slapo.build(sch, init_weights=model._init_weights)
-    # mod_1.to(device)
-    # perf_model(mod_1, input_ids, TIMES)
-    # del mod_1
-    # torch.cuda.empty_cache()
+    sch = slapo.create_schedule(model)
+    mod_1, _ = slapo.build(sch, init_weights=model._init_weights)
+    mod_1.to(device)
+    perf_model(mod_1, input_ids, TIMES)
+    del mod_1
+    torch.cuda.empty_cache()
 
     # 2. Slapo-Megatron
     sch = slapo.create_schedule(copy.deepcopy(model))
@@ -247,11 +246,11 @@ if __name__ == "__main__":
         subsch["c_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
     fix_attention_mask_shape(sch)
 
-    # mod_2, _ = slapo.build(sch, init_weights=False)
-    # mod_2.to(device)
-    # perf_model(mod_2, input_ids, TIMES)
-    # del mod_2
-    # torch.cuda.empty_cache()
+    mod_2, _ = slapo.build(sch, init_weights=False)
+    mod_2.to(device)
+    perf_model(mod_2, input_ids, TIMES)
+    del mod_2
+    torch.cuda.empty_cache()
 
 
     # 3. Weight Sharding. RR x RS = RS
@@ -278,11 +277,11 @@ if __name__ == "__main__":
         subsch["c_proj"].sync("fwd_post", sync_op_or_fn=reshard_RS_to_RR_post)
     fix_attention_mask_shape(sch)
 
-    # mod_3, _ = slapo.build(sch, init_weights=model._init_weights)
-    # mod_3.to(device)
-    # perf_model(mod_3, input_ids, TIMES)
-    # del mod_3
-    # torch.cuda.empty_cache()
+    mod_3, _ = slapo.build(sch, init_weights=model._init_weights)
+    mod_3.to(device)
+    perf_model(mod_3, input_ids, TIMES)
+    del mod_3
+    torch.cuda.empty_cache()
 
 
     # # 4. Activation Sharding. SR x RR = SR
@@ -301,9 +300,6 @@ if __name__ == "__main__":
         subsch["out_proj"].sync("fwd_pre", sync_op_or_fn=reshard_RS_to_SR_pre) # LayerNorm will crash for SR x RR = SR
         # shard MLP
         subsch = sch[f"h.{i}.mlp"]
-        # subsch["c_proj"].sync("fwd_post", sync_op_or_fn=reshard_SR_to_RR_post)
-        
-        # sch[f"h.{i+1}.ln_1"].sync("fwd_pre", sync_op_or_fn=reshard_SR_to_RR_pre)
 
     fix_attention_mask_shape_replace_add(sch)
 
