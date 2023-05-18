@@ -328,9 +328,16 @@ class Schedule:
                 # New matched.
                 subgraphs.append((parent_name, curr))
             matched = True
-            if curr.next != curr and target.next != target:
+            # if curr.next != curr and target.next != target:
+            #     matched = matched and find_match_subgraphs(
+            #         curr.next, target.next, subgraphs
+            #     )
+            # else:
+            for curr_usr, target_usr in zip(curr.users, target.users):
+                # DFS traverse. If any subgraph is not matched, the whole graph
+                # is not matched.
                 matched = matched and find_match_subgraphs(
-                    curr.next, target.next, subgraphs
+                    curr_usr, target_usr, subgraphs
                 )
             return matched
 
