@@ -184,7 +184,7 @@ def train(args):
             batch_size = micro_batch_size * args.world_size
 
         # if the TP == 1 use zero 3, otherwise use stage-1 optimizer
-        zero_opt_stage = 3 if args.tmp == 1 else 1
+        zero_opt_stage = 3# if args.tmp == 1 else 1
         logger.info(f"BS={batch_size}, MBS={micro_batch_size}", ranks=0)
         ds_config_dict = get_ds_config(
             batch_size,
@@ -196,7 +196,7 @@ def train(args):
         )
         model, _ = slapo.build(
             sch,
-            topology=topology,
+            topology=None,
             target="deepspeed",
             config=ds_config_dict,
             init_weights=model._init_weights,
@@ -204,14 +204,14 @@ def train(args):
         model = model.to(device)
     report_memory(msg="After building model")
 
-    pp_rank = None if args.disable_pipeline else model.mpu.get_pipe_parallel_rank()
-    set_random_seed(
-        2013,
-        model.mpu.get_data_parallel_rank(),
-        pp_rank,
-        tp_rank,
-        always_enable_tp_seed=args.sequence_parallel,
-    )
+    # pp_rank = None if args.disable_pipeline else model.mpu.get_pipe_parallel_rank()
+    # set_random_seed(
+    #     2013,
+    #     model.mpu.get_data_parallel_rank(),
+    #     pp_rank,
+    #     tp_rank,
+    #     always_enable_tp_seed=args.sequence_parallel,
+    # )
 
     def getitem_fn(entry):
         ret = [
@@ -223,7 +223,7 @@ def train(args):
         ]
         return ret
 
-    def collate_fn(batch, enable_pipeline=True):
+    def collate_fn(batch, enable_pipeline=False):
         input_ids = torch.tensor([x[0] for x in batch], dtype=torch.long)
         attention_mask = torch.tensor([x[1] for x in batch], dtype=torch.float16)
         position_ids = torch.stack([x[2] for x in batch])

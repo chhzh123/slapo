@@ -155,7 +155,7 @@ def train(args):
         if batch_size is None and micro_batch_size is not None:
             batch_size = micro_batch_size * args.world_size
 
-        zero_opt_stage = 3 if args.tmp == 1 else 0
+        zero_opt_stage = 3# if args.tmp == 1 else 0
         logger.info(f"BS={batch_size}, MBS={micro_batch_size}", ranks=0)
         ds_config_dict = get_ds_config(
             batch_size,
