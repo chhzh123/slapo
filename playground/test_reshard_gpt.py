@@ -220,12 +220,12 @@ if __name__ == "__main__":
     input_ids = torch.ones(BS, SEQ, dtype=torch.long, device=device)
 
     # 1. Naive
-    sch = slapo.create_schedule(model)
-    mod_1, _ = slapo.build(sch, init_weights=model._init_weights)
-    mod_1.to(device)
-    perf_model(mod_1, input_ids, TIMES)
-    del mod_1
-    torch.cuda.empty_cache()
+    # sch = slapo.create_schedule(model)
+    # mod_1, _ = slapo.build(sch, init_weights=model._init_weights)
+    # mod_1.to(device)
+    # perf_model(mod_1, input_ids, TIMES)
+    # del mod_1
+    # torch.cuda.empty_cache()
 
     # 2. Slapo-Megatron
     sch = slapo.create_schedule(copy.deepcopy(model))

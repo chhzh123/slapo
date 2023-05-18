@@ -14,7 +14,7 @@ from ..initialization import init_empty_weights
 from ..op import FlashAttention
 from ..logger import get_logger
 from .registry import register_schedule
-
+logger = get_logger()
 
 @register_schedule()
 def _apply_schedule(
@@ -30,7 +30,7 @@ def _apply_schedule(
         model_name = model_config._name_or_path
     except Exception:
         model_name = model_config.get("_name_or_path", None)
-    logger = get_logger(f"{model_name}")
+    # logger = get_logger(f"{model_name}")
 
     # Change data type.
     fp16 = sch_config.get("fp16", False)
@@ -301,39 +301,42 @@ def shard_mlp(
     if sch.world_size == 1:
         return
 
-    def reshard_RS_to_SR(_module, _input, output):
-        in_tensor = output
-        in_shape = in_tensor.shape
-        chunk_shape = list(in_shape[:-2]) + [
-            in_shape[-2] // sch.world_size,
-            in_shape[-1],
-        ]
-        splitted_tensor = torch.split(in_tensor, in_shape[-2] // sch.world_size, dim=-2)
-        for i in range(sch.world_size):
-            send_tensor = splitted_tensor[i].contiguous()
-            if sch.rank != i:
-                dist.gather(send_tensor, dst=i, async_op=True)
-            else:
-                gather_list = [
-                    torch.empty(
-                        chunk_shape, dtype=in_tensor.dtype, device=in_tensor.device
-                    )
-                    for _ in range(sch.world_size)
-                ]
-                dist.gather(send_tensor, gather_list, dst=i)
-                ret = torch.cat(gather_list, dim=-1)
-        return ret
+    # import time
+    # def reshard_RS_to_SR(_module, _input, output):
+    #     start = time.time()
+    #     in_tensor = output
+    #     in_shape = in_tensor.shape
+    #     chunk_shape = list(in_shape[:-2]) + [
+    #         in_shape[-2] // sch.world_size,
+    #         in_shape[-1],
+    #     ]
+    #     splitted_tensor = torch.split(in_tensor, in_shape[-2] // sch.world_size, dim=-2)
+    #     for i in range(sch.world_size):
+    #         send_tensor = splitted_tensor[i].contiguous()
+    #         if sch.rank != i:
+    #             dist.gather(send_tensor, dst=i, async_op=True)
+    #         else:
+    #             gather_list = [
+    #                 torch.empty(
+    #                     chunk_shape, dtype=in_tensor.dtype, device=in_tensor.device
+    #                 )
+    #                 for _ in range(sch.world_size)
+    #             ]
+    #             dist.gather(send_tensor, gather_list, dst=i)
+    #             ret = torch.cat(gather_list, dim=-1)
+    #     logger.info(f"Reshard time: {time.time() - start}", ranks=0)
+    #     return ret
 
-    def reshard_SR_to_RR(_module, _input, output):
-        in_tensor = output
-        temp = in_tensor.transpose(0, -2)
-        temp = temp.contiguous()
-        gather_shape = list(temp.shape)
-        gather_shape[0] = sch.world_size * gather_shape[0]
-        ret = torch.empty(gather_shape, dtype=temp.dtype, device=in_tensor.device)
-        dist.all_gather_into_tensor(ret, temp)
-        ret = ret.transpose(0, -2).contiguous()
-        return ret
+    # def reshard_SR_to_RR(_module, _input, output):
+    #     in_tensor = output
+    #     temp = in_tensor.transpose(0, -2)
+    #     temp = temp.contiguous()
+    #     gather_shape = list(temp.shape)
+    #     gather_shape[0] = sch.world_size * gather_shape[0]
+    #     ret = torch.empty(gather_shape, dtype=temp.dtype, device=in_tensor.device)
+    #     dist.all_gather_into_tensor(ret, temp)
+    #     ret = ret.transpose(0, -2).contiguous()
+    #     return ret
 
     for idx in range(model_config.num_hidden_layers):
         prefix = path.replace("N", str(idx))
@@ -342,16 +345,16 @@ def shard_mlp(
         sch[f"{prefix}.{fc_names[0]}.dense"].sync(
             mode="bwd_post", sync_op_or_fn="all_reduce"
         )
-        # sch[f"{prefix}.{fc_names[1]}.dense"].shard("weight", axis=1)
-        # sch[f"{prefix}.{fc_names[1]}.dense"].sync(
-        #     mode="fwd_post", sync_op_or_fn="all_reduce"
-        # )
-        sch[f"{prefix}.{fc_names[0]}.dense"].sync(
-            "fwd_post", sync_op_or_fn=reshard_RS_to_SR
-        )
+        sch[f"{prefix}.{fc_names[1]}.dense"].shard("weight", axis=1)
         sch[f"{prefix}.{fc_names[1]}.dense"].sync(
-            "fwd_post", sync_op_or_fn=reshard_SR_to_RR
+            mode="fwd_post", sync_op_or_fn="all_reduce"
         )
+        # sch[f"{prefix}.{fc_names[0]}.dense"].sync(
+        #     "fwd_post", sync_op_or_fn=reshard_RS_to_SR
+        # )
+        # sch[f"{prefix}.{fc_names[1]}.dense"].sync(
+        #     "fwd_post", sync_op_or_fn=reshard_SR_to_RR
+        # )
 
 
 def checkpoint(
