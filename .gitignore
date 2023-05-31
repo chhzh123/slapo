@@ -182,3 +182,4 @@ repo-key
 *.out.*
 hparams.yml
 docs/source/gallery
+*.dot
