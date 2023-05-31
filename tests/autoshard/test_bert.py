@@ -130,6 +130,51 @@ def scheme_sequence_parallel(model, input_ids, config):
     return sch
 
 
+def scheme_sequence_parallel_attn(model, input_ids, config):
+    sch = slapo.create_schedule(model)
+
+    from slapo.sharding.reshard_ops import (
+        reshard_SR_to_RR,
+        reshard_RR_to_SR,
+    )
+
+    def scaled_dot_product(query_layer, key_layer, value_layer):
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = attention_scores / 8  # math.sqrt(64)
+        attention_probs = torch.nn.functional.softmax(attention_scores, dim=-1)
+        attention_probs = torch.nn.functional.dropout(attention_probs)
+        context_layer = torch.matmul(attention_probs, value_layer)
+        return context_layer
+
+    class EfficientAttention(torch.nn.Module):
+        def forward(self, key_layer, query_layer, value_layer):
+            query_layer = reshard_SR_to_RR(query_layer, sch.group)
+            # transpose is done inside the scaled_dot_product
+            key_layer = reshard_SR_to_RR(key_layer, sch.group)
+            value_layer = reshard_SR_to_RR(value_layer, sch.group)
+            score = torch.nn.functional.scaled_dot_product_attention(
+                query_layer, key_layer, value_layer
+            )
+            return reshard_RR_to_SR(score, sch.group)
+
+    with slapo.Verify(sch, [input_ids], enable=True):
+        sch["bert.embeddings.LayerNorm"].sync(mode="fwd_post", sync_op_or_fn="RR->SR")
+        for i in range(config.num_hidden_layers):
+            subsch = sch[f"bert.encoder.layer.{i}.attention.self"]
+            trace_and_find_view(subsch)
+            ops = subsch.find_node(
+                lambda node: node.op == "call_function" and node.target == torch.matmul
+            )
+            assert len(ops) == 2
+            subgraphs = subsch.find(scaled_dot_product)
+            subsch.replace(EfficientAttention(), subgraphs)
+        sch[f"bert.encoder.layer.{config.num_hidden_layers - 1}.output.LayerNorm"].sync(
+            mode="fwd_post", sync_op_or_fn="SR->RR"
+        )
+
+    return sch
+
+
 def scheme_activation_stationary(model, input_ids, config):
     sch = slapo.create_schedule(model)
     enable = True if input_ids.shape[0] <= 4 else False
@@ -203,6 +248,32 @@ def scheme_activation_sharding(model, input_ids, config):
     return sch
 
 
+def replace_attn(model, input_ids, config):
+    sch = slapo.create_schedule(model)
+
+    # https://pytorch.org/docs/master/generated/torch.nn.functional.scaled_dot_product_attention.html
+    def scaled_dot_product(query_layer, key_layer, value_layer):
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = attention_scores / 8  # math.sqrt(64)
+        attention_probs = torch.nn.functional.softmax(attention_scores, dim=-1)
+        attention_probs = torch.nn.functional.dropout(attention_probs)
+        context_layer = torch.matmul(attention_probs, value_layer)
+        return context_layer
+
+    class EfficientAttention(torch.nn.Module):
+        def forward(self, key_layer, query_layer, value_layer):
+            return torch.nn.functional.scaled_dot_product_attention(
+                query_layer, key_layer, value_layer
+            )
+
+    with slapo.Verify(sch, [input_ids], eval_mode=True, enable=True):
+        for i in range(config.num_hidden_layers):
+            subsch = sch[f"bert.encoder.layer.{i}.attention.self"]
+            trace_and_find_view(subsch)
+            subgraphs = subsch.find(scaled_dot_product)
+            subsch.replace(EfficientAttention(), subgraphs)
+
+
 def test_schemes(init_dist):
     torch.cuda.set_device(dist.get_rank())
     device = torch.cuda.current_device()
@@ -219,6 +290,8 @@ def test_schemes(init_dist):
     # 2. Sequence-Parallel
     # RR->RS x RR = RS, RS x RR = RS->RR
     schs.append(scheme_sequence_parallel(copy.deepcopy(model), input_ids, config))
+    schs.append(scheme_sequence_parallel_attn(copy.deepcopy(model), input_ids, config))
+    # replace_attn(copy.deepcopy(model), input_ids, config)
     # 3. Activation-Stationary
     # RR x RS = RS
     schs.append(scheme_activation_stationary(copy.deepcopy(model), input_ids, config))
