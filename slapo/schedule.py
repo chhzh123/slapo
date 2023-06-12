@@ -1,8 +1,9 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
+
+# pylint: disable=exec-used
 from __future__ import annotations
 
-import inspect
 import re
 from collections import OrderedDict
 from collections.abc import Callable
@@ -15,26 +16,16 @@ import torch
 import torch.distributed as dist
 from torch import fx, nn
 
-# pylint: disable=unused-import
-import torch.nn.functional as F
-
 from .logger import get_logger
 from .primitives import PRIMITIVES
 from .pipeline import analyze_tie_weights
 
 from .tracer import trace as trace_module
-from .utils.common import is_lambda_function
+from .utils.common import is_module_list
 from .utils.mapping import MAPPING_FROM_FUNCTIONAL_TO_MODULE
-from .pattern import Pattern, ModulePattern, call_module
+from .pattern import Pattern, ModulePattern
 
 logger = get_logger()
-
-# Wrap call_module as a leaf.
-# This is a limitation of torch.fx
-# Currently the leaf function wrapper can only be registered in the same module
-# Otherwise, the wrapper cannot work properly.
-# See https://github.com/pytorch/pytorch/blob/v1.13.1/torch/fx/_symbolic_trace.py#L1011-L1012
-fx.wrap(call_module)
 
 
 @dataclass
@@ -282,14 +273,15 @@ class Schedule:
         """
 
         named_modules = dict(self.mod.named_modules())
-        assert isinstance(
-            pattern_fn, (FunctionType, Pattern)
-        ) and not is_lambda_function(pattern_fn)
+        assert isinstance(pattern_fn, (FunctionType, Pattern))
 
-        def find_match_subgraphs(curr, target, subgraphs):
+        def find_match_subgraph(curr, target, subgraph):
             if target.op == "output":
                 # "output" always matches.
                 return True
+            if (parent_name, curr) in all_nodes:
+                # Already matched.
+                return False
             if not (
                 (curr.op == target.op and curr.target == target.target)  # exactly match
                 or (  # nn.Module and nn.functional are viewed as the same
@@ -301,7 +293,7 @@ class Schedule:
                 or (  # use pattern language to match
                     curr.op == "call_module"
                     and target.op == "call_function"
-                    and target.target == call_module
+                    and target.target.__name__ == "call_module"
                     and re.match(target.args[0], curr.target)
                 )
                 or (  # use pattern class for matching
@@ -324,9 +316,9 @@ class Schedule:
             ):
                 # Not matched.
                 return False
-            if (parent_name, curr) not in subgraphs:
+            if (parent_name, curr) not in subgraph:
                 # New matched.
-                subgraphs.append((parent_name, curr))
+                subgraph.append((parent_name, curr))
             ptr = curr.next
             found = False
             # This loop is supposed to tackle the following case that the
@@ -352,7 +344,7 @@ class Schedule:
             # The successor of the last operation of the fx graph is binded to the root node,
             # so when ptr.op == "root", it means it reaches the end of the graph.
             while ptr.op != "root":
-                if find_match_subgraphs(ptr, target.next, subgraphs):
+                if find_match_subgraph(ptr, target.next, subgraph):
                     found = True
                     break
                 ptr = ptr.next
@@ -361,55 +353,22 @@ class Schedule:
         self.trace()
 
         if pattern_fn is not None:
-            # pylint: disable=exec-used
             if isinstance(pattern_fn, Pattern):
-                pattern_wrapper = pattern_fn
+                pattern_mod = trace_module(
+                    pattern_fn,
+                    recursive=True,
+                    flatten=True,
+                    leaf_modules=["ModulePattern"],
+                )
             else:
-                # FIXME: Find a safer way to do it
-                sig = inspect.signature(pattern_fn)
-                param_str = ", ".join(sig.parameters.keys())
-                func_name = pattern_fn.__name__
-                src_code = inspect.getsource(pattern_fn).splitlines()
-                closure_vars = inspect.getclosurevars(pattern_fn)
-                closure_code = ""
-                for key, value in closure_vars.nonlocals.items():
-                    if not callable(value):
-                        closure_code += f"{key} = {value}\n"
-                formatted_code = ""
-                indent = ""
-                for line in src_code:
-                    line = line.strip()
-                    if "def" in line:
-                        front, back = line.split("(")
-                        line = f"{indent}{front}(self, {back}\n"
-                        indent = 8 * " "
-                    else:
-                        line = f"{indent}{line}\n"
-                    formatted_code += line
-                if ".call_module" in formatted_code:
-                    raise RuntimeError(
-                        "Please directly `from slapo.pattern import call_module`"
+                # Workaround for fx wrap functions:
+                # https://github.com/pytorch/pytorch/issues/53534
+                if "call_module" in pattern_fn.__globals__:
+                    exec(
+                        "import torch.fx; torch.fx.wrap('call_module')",
+                        pattern_fn.__globals__,
                     )
-                wrapper_code = f"""
-{closure_code}
-class SubgraphWrapper(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, {param_str}):
-        return self.{func_name}({param_str})
-
-    {formatted_code}
-"""
-                exec(wrapper_code, globals())
-                # pylint: disable=undefined-variable
-                pattern_wrapper = SubgraphWrapper()
-            pattern_mod = trace_module(
-                pattern_wrapper,
-                recursive=True,
-                flatten=True,
-                leaf_modules=["ModulePattern"],
-            )
+                pattern_mod = fx.symbolic_trace(pattern_fn)
         assert isinstance(pattern_mod, fx.GraphModule)
 
         first_op = None
@@ -423,6 +382,7 @@ class SubgraphWrapper(nn.Module):
             raise RuntimeError("Cannot find the first non-placeholder operator")
 
         res = []
+        all_nodes = []
         for parent_name, submod in self.mod.named_modules():
             if not isinstance(submod, fx.GraphModule):
                 continue
@@ -432,7 +392,8 @@ class SubgraphWrapper(nn.Module):
                 subgraph = []
                 target_node = first_op
                 curr_node = node
-                if find_match_subgraphs(curr_node, target_node, subgraph):
+                if find_match_subgraph(curr_node, target_node, subgraph):
+                    all_nodes.extend(subgraph)
                     res.append(subgraph.copy())
         return res
 
@@ -582,37 +543,6 @@ def create_schedule(
             or module.__module__.startswith("torch.ao.nn")
         ) and not isinstance(module, torch.nn.Sequential)
 
-    def is_module_list(module):
-        """A module list will become nn.Module or fx.GraphModule after tracing,
-        but we still want to treat it as a module list in the schedule.
-        """
-        if isinstance(module, nn.Sequential):
-            return False
-        if isinstance(module, nn.ModuleList):
-            return True
-        if (
-            isinstance(module, fx.GraphModule)
-            and parent is not None
-            and isinstance(parent.mod, fx.GraphModule)
-        ):
-            # If the module and its parent are both traced, we can check
-            # the caller in the parent. If there is a caller that directly
-            # calls this module, then this is not a module list.
-            for node in parent.mod.graph.nodes:
-                if node.op == "call_module" and node.target == name:
-                    return False
-
-        # If all above cannot work, we could only chacke if its children are indexed by
-        # sequential integers, and treat it as a module list if so.
-        child_names = [name for name, _ in module.named_children()]
-        if not child_names:
-            return False
-        try:
-            child_names = [int(n) for n in child_names]
-            return child_names == list(range(len(child_names)))
-        except ValueError:
-            return False
-
     root_sch = Schedule(root, name, path, parent, group, **kwargs)
     if is_leaf(root):
         return root_sch
@@ -620,7 +550,7 @@ def create_schedule(
     child_schedules = {}
     for child_name, submod in root.named_children():
         next_path = f"{path}.{child_name}" if path else child_name
-        if is_module_list(submod):
+        if is_module_list(submod, name=name, parent=parent):
             # We assume ModuleList will be iteratively traversed in forward function.
             # For example:
             # In __init__: self.layers = nn.ModuleList([nn.Linear(10, 10) for _ in range(3)])

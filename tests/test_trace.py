@@ -9,6 +9,7 @@ import torch
 from torch import fx
 
 import slapo
+from slapo.pattern import call_module
 
 
 def generate_concrete_args(model, input_names):
@@ -169,6 +170,68 @@ def test_two_level_flattened_hf_bert():
     assert find_module_in_graph(sub_sch.mod.graph, "attention.output")
     # Only two levels are flattened, and other submodules are specified as leaf
     assert not find_module_in_graph(sub_sch.mod.graph, "attention.self.query")
+
+
+def test_hf_tracer_gpt_attn():
+    from transformers import GPTNeoModel, AutoConfig
+
+    config = AutoConfig.from_pretrained("EleutherAI/gpt-neo-1.3B")
+    config.use_cache = False
+    with slapo.init_empty_weights():
+        model = GPTNeoModel(config)
+    sch = slapo.create_schedule(model)
+    subsch = sch["h.0.attn.attention"]
+    input_names = ["hidden_states"]
+    sig = inspect.signature(subsch.mod.forward)
+    concrete_args = {
+        p.name: p.default for p in sig.parameters.values() if p.name not in input_names
+    }
+    subsch.trace(
+        recursive=False,
+        flatten=True,
+        tracer="huggingface",
+        concrete_args=concrete_args,
+        config=config,
+    )
+    assert isinstance(subsch.mod, fx.GraphModule)
+
+
+def test_dynamo():
+    from transformers import AutoConfig, BertLMHeadModel
+
+    config = AutoConfig.from_pretrained("bert-large-uncased")
+    with slapo.init_empty_weights():
+        model = BertLMHeadModel(config)
+    sch = slapo.create_schedule(model)
+    subsch = sch[f"bert.encoder.layer.{0}.attention.self"]
+
+    # avoid testing environment OOM
+    bs, seq_length, hidden_size = 1, 512, 1024
+    concrete_args = {"hidden_states": torch.randn(bs, seq_length, config.hidden_size)}
+    sig = inspect.signature(subsch.mod.forward)
+    concrete_args.update(
+        {
+            p.name: p.default
+            for p in sig.parameters.values()
+            if p.name not in concrete_args
+        }
+    )
+    subsch.trace(tracer="dynamo", concrete_args=concrete_args)
+    assert isinstance(subsch.mod, fx.GraphModule)
+
+    def pattern(x):
+        x = call_module(r"self_(query|key|value)", x)
+        x = x.view((8, 512, 16, 64))
+        return x.permute(0, 2, 1, 3)
+
+    qkv_subgraphs = subsch.find(pattern)
+    assert len(qkv_subgraphs) == 3
+    mod, _ = slapo.build(subsch, init_weights=model._init_weights)
+    mod = mod.cuda()
+    inp = torch.randn((bs, seq_length, hidden_size), dtype=torch.float32, device="cuda")
+    # TorchDynamo strictly requires all the inputs to be provided
+    mod(inp, None, None, None, None, None, None)
+    del mod
 
 
 if __name__ == "__main__":
