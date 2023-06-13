@@ -168,7 +168,7 @@ def replace_modules(sch, model_config, sch_config):
         sch,
         model_config,
         delay_init=delay_init,
-        attn_op_name=attn_op_name,
+        attn_op_name="native_xformers",
     )
     log_dict[f"attention layers with {applied_attn_op_name} op"] = cnt
 
