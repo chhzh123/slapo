@@ -5,7 +5,6 @@ import os
 import copy
 import inspect
 import operator
-import argparse
 
 import torch
 from torch import nn
@@ -13,7 +12,13 @@ from torch import fx
 import torch.distributed as dist
 from transformers import GPTNeoModel, AutoConfig
 
+import deepspeed
+
 import slapo
+from slapo.framework_dialect.deepspeed.pipeline import (
+    get_ds_config,
+    create_dist_group_for_pipeline,
+)
 from slapo.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,22 +28,32 @@ bs = 4
 seq_len = 1024
 
 
-def perf_model(mod, input_tensor):
+def perf_model(mod, dataloader, is_deepspeed=False):
     """Measure the performance of a mod with certain resharding schemes"""
     # warmup
     mod.eval()
     # mod.to(torch.float16)
-    for _ in range(10):
-        mod(input_tensor)
+    if is_deepspeed:
+        for _ in range(10):
+            mod.eval_batch(dataloader, compute_loss=False)
+    else:
+        for _ in range(10):
+            mod(dataloader)
 
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
 
-    start_event.record()
     iters = 40
-    for _ in range(iters):
-        mod(input_tensor)
-    end_event.record()
+    if is_deepspeed:
+        start_event.record()
+        for _ in range(iters):
+            mod.eval_batch(dataloader, compute_loss=False)
+        end_event.record()
+    else:
+        start_event.record()
+        for _ in range(iters):
+            mod(dataloader)
+        end_event.record()
     torch.cuda.synchronize()
     if dist.get_rank() == 0:
         print(f"{start_event.elapsed_time(end_event) / iters:.3f} ms")
@@ -91,28 +106,63 @@ def fix_attention_mask_shape_megatron(sch, config):
 
 
 def scheme_megatron(model, input_ids, config):
-    sch = slapo.create_schedule(model)
+    num_pp = dist.get_world_size()
+    num_mp = 1
+    num_dp = dist.get_world_size() // (num_pp * num_mp)
+    topology, group = create_dist_group_for_pipeline(num_pp=num_pp, num_mp=num_mp)
+    sch = slapo.create_schedule(model, group=group)
 
-    enable = True if input_ids.shape[0] == 1 else False
-    with slapo.Verify(sch, [input_ids], enable=enable):
-        for i in range(config.num_hidden_layers):
-            # shard attention
-            subsch = sch[f"h.{i}.attn.attention"]
-            # no bias for GPTNeo
-            subsch["q_proj"].shard("weight", axis=0)
-            subsch["k_proj"].shard("weight", axis=0)
-            subsch["v_proj"].shard("weight", axis=0)
-            subsch["out_proj"].shard("weight", axis=1)
-            subsch["out_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
-            fix_attention_mask_shape_megatron(subsch, config)
-            # shard MLP
-            subsch = sch[f"h.{i}.mlp"]
-            subsch["c_fc"].shard("weight", axis=0)
-            subsch["c_fc"].shard("bias", axis=0)
-            subsch["c_proj"].shard("weight", axis=1)
-            subsch["c_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
+    with slapo.Verify(sch, [input_ids], enable=False):
+        # Tensor parallel
+        # for i in range(config.num_hidden_layers):
+        #     # shard attention
+        #     subsch = sch[f"h.{i}.attn.attention"]
+        #     # no bias for GPTNeo
+        #     subsch["q_proj"].shard("weight", axis=0)
+        #     subsch["k_proj"].shard("weight", axis=0)
+        #     subsch["v_proj"].shard("weight", axis=0)
+        #     subsch["out_proj"].shard("weight", axis=1)
+        #     subsch["out_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
+        #     fix_attention_mask_shape_megatron(subsch, config)
+        #     # shard MLP
+        #     subsch = sch[f"h.{i}.mlp"]
+        #     subsch["c_fc"].shard("weight", axis=0)
+        #     subsch["c_fc"].shard("bias", axis=0)
+        #     subsch["c_proj"].shard("weight", axis=1)
+        #     subsch["c_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
+        # Pipeline parallel
+        input_names = ["input_ids"]
+        sig = inspect.signature(sch.mod.forward)
+        concrete_args = {
+            p.name: p.default
+            for p in sig.parameters.values()
+            if p.name not in input_names
+        }
+        sch.trace_until("", tracer="huggingface", concrete_args=concrete_args)
+        sch["h.2"].cut_pipeline_stage()
+        sch["h.5"].cut_pipeline_stage()
+        sch["h.8"].cut_pipeline_stage()
+        sch["h.11"].cut_pipeline_stage()
+        sch["h.14"].cut_pipeline_stage()
+        sch["h.17"].cut_pipeline_stage()
+        sch["h.20"].cut_pipeline_stage()
 
-    return sch
+    micro_bs = bs // num_dp
+    ds_config_dict = get_ds_config(
+        batch_size=bs,
+        micro_batch_size_per_gpu=micro_bs,
+        fp16=False,
+    )
+    mod, _ = slapo.build(
+        sch,
+        init_weights=model._init_weights,
+        target="deepspeed",
+        topology=topology,
+        config=ds_config_dict,
+        loss_fn=None,
+    )
+
+    return mod
 
 
 def scheme_sequence_parallel(model, input_ids, config):
@@ -170,7 +220,6 @@ def scheme_sequence_parallel(model, input_ids, config):
 
 
 def test_schemes(init_dist):
-    torch.cuda.set_device(dist.get_rank())
     device = torch.cuda.current_device()
 
     config = AutoConfig.from_pretrained("EleutherAI/gpt-neo-1.3B")
@@ -190,51 +239,40 @@ def test_schemes(init_dist):
 
 
 if __name__ == "__main__":
-    # Create parser
-    # parser = argparse.ArgumentParser(description="Resharding schemes on GPTNeo")
-    # # Add arguments
-    # parser.add_argument("--bs", type=int, help="Batch size", default=4)
-    # parser.add_argument("--seq", type=int, help="Sequence length", default=1024)
-    # # Parse the arguments
-    # args = parser.parse_args()
+    deepspeed.init_distributed(dist_backend="nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
 
-    # bs = args.bs
-    # seq_len = args.seq
-
-    dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
-
-    # logger.info(
-    #     "Number of GPUs: %d, bs=%d, seq_len=%d; Model: GPTNeo",
-    #     dist.get_world_size(),
-    #     bs,
-    #     seq_len,
-    #     ranks=0,
-    # )
-
+    num_dp = 1
+    micro_bs = bs // num_dp
     input_ids = torch.ones(
         bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
     )
-    schs = test_schemes(None)
-    mod, _ = slapo.build(schs[0], init_weights=schs[0].mod._init_weights)
-    mod.eval()
-    mod.to(f"cuda:{dist.get_rank()}")
-    output = mod(input_ids)
-    # for i, sch in enumerate(schs):
-    #     mod, _ = slapo.build(sch, init_weights=sch.mod._init_weights)
-    #     mod.to(f"cuda:{dist.get_rank()}")
-    #     torch.cuda.empty_cache()
-    #     perf_model(mod, input_ids)
-    #     del mod
-
-    import deepspeed
-    ds_engine = deepspeed.init_inference(
-        mod,
-        mp_size=1,
-        dtype=torch.float32,
-        checkpoint=None,
-        replace_with_kernel_inject=False,
+    labels = torch.randint(
+        0, 10, (micro_bs, seq_len), dtype=torch.long, device=dist.get_rank()
     )
-    mod = ds_engine.module
-    perf_model(mod, input_ids)
-    new_out = mod(input_ids)
-    torch.testing.assert_close(output, new_out)
+    mods = test_schemes(None)
+    mod = mods[0]
+
+    # ds_engine = deepspeed.init_inference(
+    #     mods[0],
+    #     mp_size=1,
+    #     dtype=torch.float32,
+    #     checkpoint=None,
+    #     replace_with_kernel_inject=False,
+    # )
+    # mod = ds_engine.module
+    from deepspeed.utils import RepeatingLoader
+
+    data_iter = RepeatingLoader(
+        [
+            # First batch: (inputs, labels)
+            (
+                tuple((input_ids,)),  # inputs
+                labels,  # labels
+            ),
+            # Rest of the batches
+            # ...
+        ]
+    )
+    perf_model(mod, data_iter, is_deepspeed=True)

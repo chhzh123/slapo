@@ -169,77 +169,6 @@ def scheme_sequence_parallel(model, input_ids, config):
     return sch
 
 
-def scheme_activation_stationary(model, input_ids, config):
-    sch = slapo.create_schedule(model)
-    with slapo.Verify(sch, [input_ids]):
-        for i in range(config.num_hidden_layers):
-            # shard attention
-            subsch = sch[f"bert.encoder.layer.{i}.attention.self"]
-            subsch["query"].shard("weight", axis=0)
-            subsch["query"].shard("bias", axis=0)
-            subsch["key"].shard("weight", axis=0)
-            subsch["key"].shard("bias", axis=0)
-            subsch["value"].shard("weight", axis=0)
-            subsch["value"].shard("bias", axis=0)
-            fix_attention_mask_shape_megatron(subsch)
-            subsch = sch[f"bert.encoder.layer.{i}.attention.output"]
-            # shape here: [4096, 256](RS). Need to matmul with [1024, 1024] (without shard)
-            subsch["dense"].sync("fwd_pre", sync_op_or_fn="RS->RR")
-            subsch["dense"].shard("weight", axis=0)
-            subsch["dense"].shard("bias", axis=0)
-            subsch["dense"].sync("fwd_post", sync_op_or_fn="RS->RR")
-            # shard MLP
-            subsch = sch[f"bert.encoder.layer.{i}"]
-            subsch["intermediate.dense"].shard("weight", axis=0)
-            subsch["intermediate.dense"].shard("bias", axis=0)
-            subsch["intermediate.dense"].sync("fwd_post", sync_op_or_fn="RS->RR")
-            subsch["output.dense"].shard("weight", axis=0)
-            subsch["output.dense"].shard("bias", axis=0)
-            subsch["output.dense"].sync("fwd_post", sync_op_or_fn="RS->RR")
-
-    return sch
-
-
-def scheme_activation_sharding(model, input_ids, config):
-    sch = slapo.create_schedule(model)
-
-    from slapo.sharding.reshard_ops import reshard_RR_to_SR
-
-    def reshard_and_add(dropout, hidden_states):
-        """Replace the add operator with reshard_and_add"""
-        reshard_hidden_states = reshard_RR_to_SR(hidden_states, sch.group)
-        return dropout + reshard_hidden_states
-
-    with slapo.Verify(sch, [input_ids]):
-        for i in range(config.num_hidden_layers):
-            # shard attention
-            subsch = sch[f"bert.encoder.layer.{i}.attention.self"]
-            subsch["query"].shard("weight", axis=0)
-            subsch["query"].shard("bias", axis=0)
-            subsch["key"].shard("weight", axis=0)
-            subsch["key"].shard("bias", axis=0)
-            subsch["value"].shard("weight", axis=0)
-            subsch["value"].shard("bias", axis=0)
-            fix_attention_mask_shape_megatron(subsch)
-            subsch = sch[f"bert.encoder.layer.{i}.attention.output"]
-
-            subsch.trace(recursive=False, flatten=False, tracer="pytorch")
-            ops = subsch.find_node(
-                lambda node: node.op == "call_function" and node.target == operator.add
-            )
-            subsch.replace(reshard_and_add, ops[0])
-
-            # shape here: RS
-            subsch["dense"].sync(
-                "fwd_pre", sync_op_or_fn="RS->SR"
-            )  # LayerNorm will crash for SR x RR = SR
-            # shard MLP
-            subsch = sch[f"bert.encoder.layer.{i}"]
-            subsch["output.LayerNorm"].sync("fwd_post", sync_op_or_fn="SR->RR")
-
-    return sch
-
-
 def test_schemes(init_dist):
     torch.cuda.set_device(dist.get_rank())
     device = torch.cuda.current_device()
@@ -253,15 +182,10 @@ def test_schemes(init_dist):
     input_ids = torch.ones(bs, seq_len, dtype=torch.long, device=device)
     # 1. Slapo-Megatron
     # RR x RS = RS, RS x SR = RR
-    # schs.append(scheme_megatron(copy.deepcopy(model), input_ids, config))
+    schs.append(scheme_megatron(copy.deepcopy(model), input_ids, config))
     # 2. Sequence-Parallel
     # RR->RS x RR = RS, RS x RR = RS->RR
-    schs.append(scheme_sequence_parallel(copy.deepcopy(model), input_ids, config))
-    # 3. Activation-Stationary
-    # RR x RS = RS
-    # schs.append(scheme_activation_stationary(copy.deepcopy(model), input_ids, config))
-    # # 4. Activation Sharding. SR x RR = SR
-    # schs.append(scheme_activation_sharding(copy.deepcopy(model), input_ids, config))
+    # schs.append(scheme_sequence_parallel(copy.deepcopy(model), input_ids, config))
     return schs
 
 
@@ -308,9 +232,9 @@ if __name__ == "__main__":
         mp_size=1,
         dtype=torch.float32,
         checkpoint=None,
-        replace_with_kernel_inject=True,
+        replace_with_kernel_inject=False,
     )
     mod = ds_engine.module
     perf_model(mod, input_ids)
     new_out = mod(input_ids)
-    print(torch.testing.assert_close(output, new_out, rtol=1e-3, atol=1e-3))
+    torch.testing.assert_close(output, new_out)
