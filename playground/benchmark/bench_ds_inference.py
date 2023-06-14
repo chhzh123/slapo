@@ -59,17 +59,30 @@ def get_gpt_model():
     return mod, input_ids
 
 
+def get_llama_model():
+    from transformers import LlamaModel, AutoConfig
+
+    config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
+    config.use_cache = False
+    mod = LlamaModel(config)
+    bs, seq_len = 2, 2048
+    input_ids = torch.ones(
+        bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
+    )
+    return mod, input_ids
+
+
 if __name__ == "__main__":
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
 
     for kernel_opt in [False, True]:
-        for mod, input_ids in [get_gpt_model()]:
+        for mod, input_ids in [get_llama_model()]:
             # Initialize the DeepSpeed-Inference engine
             # https://www.deepspeed.ai/tutorials/inference-tutorial/
             ds_engine = deepspeed.init_inference(
                 mod,
                 mp_size=dist.get_world_size(),
-                dtype=torch.float32,
+                dtype=torch.float16,
                 checkpoint=None,
                 replace_with_kernel_inject=kernel_opt,
             )
