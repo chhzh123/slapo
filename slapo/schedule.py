@@ -282,6 +282,11 @@ class Schedule:
             if (parent_name, curr) in all_nodes:
                 # Already matched.
                 return False
+            # Match non-Node arguments.
+            for i, arg in enumerate(target.args):
+                if not isinstance(arg, (tuple, fx.Node)):
+                    if i >= len(curr.args) or arg != curr.args[i]:
+                        return False
             if not (
                 (curr.op == target.op and curr.target == target.target)  # exactly match
                 or (  # nn.Module and nn.functional are viewed as the same

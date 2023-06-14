@@ -2,14 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import math
 import copy
 import inspect
-import operator
-import argparse
 
 import torch
 from torch import nn
-from torch import fx
+import torch.nn.functional as F
 import torch.distributed as dist
 import deepspeed
 from transformers import LlamaModel, AutoConfig
@@ -121,28 +120,45 @@ def shard_word_embedding(sch, vocab_size, word_embed_name="embeddings.word_embed
 
 def scheme_megatron(model, input_ids, config):
     sch = slapo.create_schedule(model)
+    # Shard embedding
     # shard_word_embedding(sch, config.vocab_size, "embed_tokens")
 
-    enable = False
-    with slapo.Verify(sch, [input_ids], enable=enable):
-        for i in range(config.num_hidden_layers):
-            # shard attention
-            subsch = sch[f"layers.{i}.self_attn"]
-            # no bias for GPTNeo
-            subsch["q_proj"].shard("weight", axis=0)
-            subsch["k_proj"].shard("weight", axis=0)
-            subsch["v_proj"].shard("weight", axis=0)
-            subsch["o_proj"].shard("weight", axis=1)
-            subsch["o_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
-            fix_attention_mask_shape_megatron(subsch, config)
-            # shard MLP
-            # * is element-wise multiplication
-            # self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-            subsch = sch[f"layers.{i}.mlp"]
-            subsch["gate_proj"].shard("weight", axis=0)
-            subsch["up_proj"].shard("weight", axis=0)
-            subsch["down_proj"].shard("weight", axis=1)
-            subsch["down_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
+    # Shard attention
+    for i in range(config.num_hidden_layers):
+        # shard self attention
+        subsch = sch[f"layers.{i}.self_attn"]
+        # no bias for GPTNeo
+        subsch["q_proj"].shard("weight", axis=0)
+        subsch["k_proj"].shard("weight", axis=0)
+        subsch["v_proj"].shard("weight", axis=0)
+        subsch["o_proj"].shard("weight", axis=1)
+        subsch["o_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
+        fix_attention_mask_shape_megatron(subsch, config)
+        # shard MLP
+        # * is element-wise multiplication
+        # self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        subsch = sch[f"layers.{i}.mlp"]
+        subsch["gate_proj"].shard("weight", axis=0)
+        subsch["up_proj"].shard("weight", axis=0)
+        subsch["down_proj"].shard("weight", axis=1)
+        subsch["down_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
+
+        # Replace efficient kernels
+        def pattern(query_states, key_states, value_states):
+            attn_weights = torch.matmul(
+                query_states, key_states.transpose(2, 3)
+            ) / math.sqrt(config.hidden_size // config.num_attention_heads)
+            # upcast attention to fp32
+            attn_weights = nn.functional.softmax(
+                attn_weights, dim=-1, dtype=torch.float32
+            ).to(query_states.dtype)
+            attn_output = torch.matmul(attn_weights, value_states)
+            return attn_output
+
+        subsch = sch[f"layers.{i}.self_attn"]
+        subgraphs = subsch.find(pattern)
+        assert len(subgraphs[0]) > 0
+        subsch.replace(F.scaled_dot_product_attention, subgraphs)
 
     return sch
 
