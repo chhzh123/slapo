@@ -65,6 +65,8 @@ def get_llama_model():
     config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
     config.use_cache = False
     mod = LlamaModel(config)
+    mod.eval()
+    mod.to(torch.float16)
     bs, seq_len = 2, 2048
     input_ids = torch.ones(
         bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
@@ -88,4 +90,6 @@ if __name__ == "__main__":
             )
             mod = ds_engine.module
             perf_model(mod, input_ids)
+            output = mod(input_ids)
+            print(output)
             del mod
