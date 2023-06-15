@@ -283,9 +283,9 @@ class Schedule:
                 # Already matched.
                 return False
             # Match non-Node arguments.
-            for i, arg in enumerate(target.args):
+            for i, arg in enumerate(curr.args):
                 if not isinstance(arg, (tuple, fx.Node)):
-                    if i >= len(curr.args) or arg != curr.args[i]:
+                    if i >= len(target.args) or arg != target.args[i]:
                         return False
             if not (
                 (curr.op == target.op and curr.target == target.target)  # exactly match
