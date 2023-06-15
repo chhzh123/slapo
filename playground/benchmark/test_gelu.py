@@ -14,7 +14,7 @@ def perf_model(mod, input_tensor):
     """Measure the performance of a mod with certain resharding schemes"""
     # warmup
     mod.eval()
-    # mod.to(torch.float16)
+    mod.to(torch.float16)
     for _ in range(10):
         mod(input_tensor)
 
@@ -61,7 +61,7 @@ assert len(subgraph[0]) == 2
 sch.fuse(subgraph, compiler="TorchScript", name="BiasGeLU")
 slapo_mod, _ = slapo.build(sch, init_weights=False)
 
-inp = torch.randn(2, 2048, 4096).cuda()
+inp = torch.randn(2, 2048, 4096, dtype=torch.float16, device="cuda")
 perf_model(mod, inp)
 perf_model(slapo_mod, inp)
 opt_mod = torch.compile(mod, mode="reduce-overhead", backend="inductor")
