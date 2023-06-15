@@ -14,6 +14,7 @@ import deepspeed
 from transformers import LlamaModel, AutoConfig
 
 import slapo
+from slapo.pattern import call_module
 from slapo.logger import get_logger
 
 logger = get_logger(__name__)
@@ -44,7 +45,7 @@ def perf_model(mod, input_tensor):
         print(f"{start_event.elapsed_time(end_event) / iters:.3f} ms")
 
 
-def trace_and_find_view(sch, config):
+def trace_module(sch, config):
     input_names = ["hidden_states", "position_ids"]
     sig = inspect.signature(sch.mod.forward)
     concrete_args = {
@@ -58,30 +59,28 @@ def trace_and_find_view(sch, config):
         leaf_modules=["LlamaRotaryEmbedding"],
         config=config,
     )
-    ops = sch.find_node(
-        lambda node: node.op == "call_method"
-        and node.target == "view"
-        and node.args[0].op == "call_module"
-        and "proj" in node.args[0].target
-    )
-    sch.mod.embed_dim = config.hidden_size
-    sch.mod.num_attention_heads = config.num_attention_heads
-    assert len(ops) == 3  # q,k,v
+
+
+def fix_attention_mask_shape_megatron(sch, config):
+    # ops = sch.find_node(
+    #     lambda node: node.op == "call_method"
+    #     and node.target == "view"
+    #     and node.args[0].op == "call_module"
+    #     and "proj" in node.args[0].target
+    # )
+    # sch.mod.embed_dim = config.hidden_size
+    # sch.mod.num_attention_heads = config.num_attention_heads
+    # assert len(ops) == 3  # q,k,v
+
+    # def new_view(tensor, *args):
+    #     return tensor.view(args[0], args[1], args[2] // sch.world_size, args[3])
+
+    # for op in ops:
+    #     sch.replace(new_view, op)
     reshape_op = sch.find_node(
         lambda node: node.op == "call_method" and node.target == "reshape"
     )
     assert len(reshape_op) == 1
-    return ops, reshape_op
-
-
-def fix_attention_mask_shape_megatron(sch, config):
-    ops, reshape_op = trace_and_find_view(sch, config)
-
-    def new_view(tensor, *args):
-        return tensor.view(args[0], args[1], args[2] // sch.world_size, args[3])
-
-    for op in ops:
-        sch.replace(new_view, op)
 
     def new_reshape(tensor, *args):
         return tensor.reshape(args[0], args[1], args[2] // sch.world_size)
@@ -118,6 +117,43 @@ def shard_word_embedding(sch, vocab_size, word_embed_name="embeddings.word_embed
     sch[word_embed_name].sync(mode="fwd_post", sync_op_or_fn=fwd_post_hook)
 
 
+class FusedQKV(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        world_size: int,
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.world_size = world_size
+        self.head_dim = embed_dim // num_heads
+        self.fused_linear = nn.Linear(
+            embed_dim, embed_dim * 3 // self.world_size, bias=bias
+        )
+
+    def forward(self, hidden_states: torch.Tensor):
+        bsz, tgt_len, _ = hidden_states.size()
+        qkv = self.fused_linear(hidden_states)
+        reshaped_qkv = (
+            qkv.view(bsz, tgt_len, 3 * self.num_heads // self.world_size, self.head_dim)
+            .transpose(1, 2)
+            .contiguous()
+        )
+        reshaped_qkv = reshaped_qkv.view(
+            bsz, 3, self.num_heads // self.world_size, tgt_len, self.head_dim
+        )
+        q, k, v = reshaped_qkv.unbind(dim=1)
+
+        query_states = q.contiguous()
+        key_states = k.contiguous()
+        value_states = v.contiguous()
+
+        return query_states, key_states, value_states
+
+
 def scheme_megatron(model, input_ids, config):
     sch = slapo.create_schedule(model)
     # Shard embedding
@@ -127,10 +163,31 @@ def scheme_megatron(model, input_ids, config):
     for i in range(config.num_hidden_layers):
         # shard self attention
         subsch = sch[f"layers.{i}.self_attn"]
+        # Replace QKV kernels
+        trace_module(subsch, config)
+
+        def qkv_pattern(hidden_states):
+            new_states = call_module(r"[qkv]_proj", hidden_states)
+            new_states.view(
+                bs,
+                seq_len,
+                config.num_attention_heads,
+                config.hidden_size // config.num_attention_heads,
+            ).transpose(1, 2)
+            return new_states
+
+        subgraphs = subsch.find(qkv_pattern)
+        assert len(subgraphs) == 3
+        fused_qkv = FusedQKV(
+            config.hidden_size, config.num_attention_heads, sch.world_size, bias=False
+        )
+        # fused_qkv = torch.compile(fused_qkv.cuda(), mode="reduce-overhead", backend="inductor")
+        # out = fused_qkv(torch.randn(bs, seq_len, config.hidden_size).cuda())
+        # logger.info(f"Replace QKV with fused QKV", ranks=0)
+        subsch.replace(fused_qkv, subgraphs)
+
         # no bias for GPTNeo
-        subsch["q_proj"].shard("weight", axis=0)
-        subsch["k_proj"].shard("weight", axis=0)
-        subsch["v_proj"].shard("weight", axis=0)
+        # subsch["FusedQKV_0.fused_linear"].shard("weight", axis=0)
         subsch["o_proj"].shard("weight", axis=1)
         subsch["o_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
         fix_attention_mask_shape_megatron(subsch, config)
@@ -142,6 +199,8 @@ def scheme_megatron(model, input_ids, config):
         subsch["up_proj"].shard("weight", axis=0)
         subsch["down_proj"].shard("weight", axis=1)
         subsch["down_proj"].sync("fwd_post", sync_op_or_fn="all_reduce")
+
+        subsch = sch[f"layers.{i}.self_attn"]
 
         # Replace efficient kernels
         def pattern(query_states, key_states, value_states):
@@ -155,9 +214,8 @@ def scheme_megatron(model, input_ids, config):
             attn_output = torch.matmul(attn_weights, value_states)
             return attn_output
 
-        subsch = sch[f"layers.{i}.self_attn"]
         subgraphs = subsch.find(pattern)
-        assert len(subgraphs[0]) > 0
+        assert len(subgraphs) > 0
         subsch.replace(F.scaled_dot_product_attention, subgraphs)
 
     return sch
