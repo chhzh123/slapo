@@ -20,7 +20,7 @@ from slapo.logger import get_logger
 logger = get_logger(__name__)
 
 # Config for verification
-bs = 2
+bs = 1
 seq_len = 2048
 
 
@@ -218,6 +218,24 @@ def scheme_megatron(model, input_ids, config):
         assert len(subgraphs) > 0
         subsch.replace(F.scaled_dot_product_attention, subgraphs)
 
+        # Fuse add and layernorm
+        # subsch = sch[f"layers.{i}"]
+        # input_names = ["hidden_states"]
+        # sig = inspect.signature(sch.mod.forward)
+        # concrete_args = {
+        #     p.name: p.default for p in sig.parameters.values() if p.name not in input_names
+        # }
+        # subsch.trace(recursive=False, concrete_args=concrete_args, leaf_modules=["LlamaRMSNorm", "LlamaAttention", "LlamaMLP"])
+        # def add_ln_pattern(residual, hidden_states):
+        #     hidden_states = residual + hidden_states
+        #     hidden_states = call_module("post_attention_layernorm", hidden_states)
+        #     return hidden_states
+        # subgraphs = subsch.find(add_ln_pattern)
+        # print(subgraphs)
+        # assert len(subgraphs) > 0
+        # subsch.fuse(subgraphs, compiler="TorchScript", name="fused_add_ln")
+        # print(subsch.mod.graph)
+
     return sch
 
 
@@ -225,7 +243,8 @@ def test_schemes(init_dist):
     torch.cuda.set_device(dist.get_rank())
     device = torch.cuda.current_device()
 
-    config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
+    # config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
+    config = AutoConfig.from_pretrained("lmsys/vicuna-13b-delta-v1.1")
     config.use_cache = False
     config.pad_token_id = 0
     with slapo.init_empty_weights():

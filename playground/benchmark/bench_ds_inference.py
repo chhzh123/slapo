@@ -6,6 +6,10 @@ import os
 import torch
 import torch.distributed as dist
 import deepspeed
+from argparse import ArgumentParser
+
+parser = ArgumentParser()
+parser.add_argument("--name", required=True, type=str, help="model_name")
 
 
 def perf_model(mod, input_tensor):
@@ -58,30 +62,89 @@ def get_gpt_model():
 def get_llama_model():
     from transformers import LlamaModel, AutoConfig
 
-    config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
+    # config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
+    # elinas/llama-7b-hf-transformers-4.29
+    config = AutoConfig.from_pretrained("lmsys/vicuna-13b-delta-v1.1")
     config.use_cache = False
     mod = LlamaModel(config)
     mod.eval()
     mod.to(torch.float16)
-    bs, seq_len = 2, 2048
+    bs, seq_len = 1, 2048
     input_ids = torch.ones(
         bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
     )
     return mod, input_ids
 
 
+def get_opt_model():
+    from transformers import OPTModel, AutoConfig
+
+    # config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
+    # elinas/llama-7b-hf-transformers-4.29
+    config = AutoConfig.from_pretrained("facebook/opt-13b")
+    config.use_cache = False
+    with deepspeed.OnDevice(dtype=torch.float16, device="meta", enabled=False):
+        mod = OPTModel(config)
+    mod.eval()
+    mod.to(torch.float16)
+    bs, seq_len = 1, 2048
+    input_ids = torch.ones(
+        bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
+    )
+    return mod, input_ids
+
+
+def generate_json(model_name, checkpoint_path=None):
+    import io
+    from pathlib import Path
+    from huggingface_hub import snapshot_download
+    import json
+
+    if checkpoint_path is None:
+        repo_root = snapshot_download(
+            model_name,
+            allow_patterns=["*"],
+            cache_dir=os.getenv("TRANSFORMERS_CACHE", None),
+            ignore_patterns=["*.safetensors"],
+            local_files_only=False,
+            revision=None,
+        )
+    else:
+        assert os.path.exists(
+            checkpoint_path
+        ), f"Checkpoint path {checkpoint_path} does not exist"
+        repo_root = checkpoint_path
+
+    if os.path.exists(os.path.join(repo_root, "ds_inference_config.json")):
+        checkpoints_json = os.path.join(repo_root, "ds_inference_config.json")
+    else:
+        checkpoints_json = "checkpoints.json"
+
+        with io.open(checkpoints_json, "w", encoding="utf-8") as f:
+            file_list = [
+                str(entry).split("/")[-1]
+                for entry in Path(repo_root).rglob("*.[bp][it][n]")
+                if entry.is_file()
+            ]
+            data = {"type": "BLOOM", "checkpoints": file_list, "version": 1.0}
+            json.dump(data, f)
+
+    return repo_root, checkpoints_json
+
+
 if __name__ == "__main__":
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
 
     for kernel_opt in [False, True]:
-        for mod, input_ids in [get_llama_model()]:
+        for mod, input_ids in [get_opt_model()]:
             # Initialize the DeepSpeed-Inference engine
             # https://www.deepspeed.ai/tutorials/inference-tutorial/
+            # repo_root, checkpoints_json = generate_json("facebook/opt-13b", "ds_inference_config.json")
             ds_engine = deepspeed.init_inference(
                 mod,
                 mp_size=dist.get_world_size(),
                 dtype=torch.float16,
-                checkpoint=None,
+                checkpoint=None,  # "checkpoints.json",
                 replace_with_kernel_inject=kernel_opt,
             )
             mod = ds_engine.module
