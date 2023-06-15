@@ -7,10 +7,6 @@ import torch
 import torch.distributed as dist
 import deepspeed
 
-# Config for verification
-bs = 4
-seq_len = 1024
-
 
 def perf_model(mod, input_tensor):
     """Measure the performance of a mod with certain resharding schemes"""
@@ -89,7 +85,7 @@ if __name__ == "__main__":
                 replace_with_kernel_inject=kernel_opt,
             )
             mod = ds_engine.module
+            if dist.get_rank() == 0:
+                print(mod)
             perf_model(mod, input_ids)
-            output = mod(input_ids)
-            print(output)
             del mod
