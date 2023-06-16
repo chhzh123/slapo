@@ -23,6 +23,9 @@ bs = args.bs
 
 def optimize(mod, config):
     sch = slapo.create_schedule(mod)
+    if dist.get_world_size() == 1:
+        mod, _ = slapo.build(sch, init_weights=mod._init_weights)
+        return mod
     for i in range(config.num_hidden_layers):
         shard_attention(
             sch[f"encoder.layer.{i}.attention"],
@@ -32,7 +35,7 @@ def optimize(mod, config):
         shard_mlp(
             sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
         )
-    mod, _ = slapo.build(sch)
+    mod, _ = slapo.build(sch, init_weights=mod._init_weights)
     return mod
 
 
