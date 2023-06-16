@@ -8,6 +8,7 @@ import operator
 
 from types import FunctionType
 
+import torch
 from torch import fx
 
 from ..logger import get_logger
@@ -45,7 +46,7 @@ def _get_unique_module_name(gm_or_modules, name):
     return new_name
 
 
-def get_required_args(sig, ops, concrete_args=None):
+def get_required_args(sig, ops, concrete_args=None, check=True):
     first_node = ops[0]
     if sig is None:
         mod_args_need_inputs = []
@@ -75,8 +76,10 @@ def get_required_args(sig, ops, concrete_args=None):
         for arg in node.args:
             if isinstance(arg, fx.Node) and arg not in ops and arg not in subgraph_args:
                 subgraph_args.append(arg)
-    if sig is not None and len(subgraph_args) + len(concrete_args) != len(
-        mod_args_need_inputs
+    if (
+        check
+        and sig is not None
+        and len(subgraph_args) + len(concrete_args) != len(mod_args_need_inputs)
     ):
         raise ValueError(
             "The number of arguments (w/o default values) of the "
@@ -117,7 +120,12 @@ def vertical_fusion(
             sig = inspect.signature(new_mod_or_func)
         except ValueError:
             sig = None
-    subgraph_args, new_kwargs = get_required_args(sig, ops, concrete_args)
+    subgraph_args, new_kwargs = get_required_args(
+        sig,
+        ops,
+        concrete_args,
+        check=not isinstance(new_mod_or_func, torch._dynamo.eval_frame.OptimizedModule),
+    )
     last_node = ops[-1]
     with target_mod.graph.inserting_after(last_node):
         if is_module:

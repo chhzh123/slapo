@@ -39,6 +39,10 @@ class FusePrimitive(Primitive):
             new_gm = sch._construct_fx_graph(subgraph[0])
             new_mod = torch.jit.script(new_gm)
             sch.replace(new_mod, subgraph, name)
+        elif compiler == "TorchInductor":
+            new_gm = sch._construct_fx_graph(subgraph[0])
+            new_mod = torch.compile(new_gm, backend="inductor")
+            sch.replace(new_mod, subgraph, name)
         elif compiler is None:
             mod_list = []
             for _, node in subgraph[0]:
