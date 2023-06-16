@@ -49,6 +49,8 @@ def optimize(mod, config):
         trace_attention(sch[f"encoder.layer.{i}.attention"], config)
         replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
     mod, _ = slapo.build(sch, init_weights=mod._init_weights)
+    if sch.world_size == 1:
+        mod = torch.compile(mod, fullgraph=True, backend="inductor")
     return mod
 
 

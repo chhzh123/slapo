@@ -35,6 +35,7 @@ def perf_model(mod, input_tensor):
     torch.cuda.empty_cache()
     mod.to(torch.float16)
     mod.eval()
+    mod.to("cuda")
     for _ in range(10):
         mod(input_tensor)
 
@@ -42,7 +43,7 @@ def perf_model(mod, input_tensor):
     end_event = torch.cuda.Event(enable_timing=True)
 
     start_event.record()
-    iters = 40
+    iters = 100
     for _ in range(iters):
         mod(input_tensor)
     end_event.record()
