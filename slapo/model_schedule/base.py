@@ -7,6 +7,8 @@ import inspect
 import torch
 import torch.nn.functional as F
 
+from slapo.pattern import call_module
+
 
 def trace_attention(sch, config, input_names=["hidden_states"]):
     sig = inspect.signature(sch.mod.forward)
@@ -97,3 +99,18 @@ def fuse_bias_gelu(sch, name="dense"):
     subgraph = sch.find(pattern)
     assert len(subgraph[0]) == 2
     sch.fuse(subgraph, compiler="TorchScript", name="BiasGeLU")
+
+
+def fuse_ln_residual(sch, names=["dense", "LayerNorm"]):
+    dense, ln = names
+    sch[dense].decompose()
+    sch.trace(flatten=True)
+
+    def pattern(bias, x, residual):
+        x = F.dropout(bias + x)
+        x = call_module(ln, x + residual)
+        return x
+
+    subgraph = sch.find(pattern)
+    assert len(subgraph[0]) == 4
+    sch.fuse(subgraph, compiler="TorchScript", name="LNResidual")

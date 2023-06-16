@@ -15,6 +15,7 @@ from slapo.model_schedule.base import (
     trace_attention,
     replace_sdp,
     fuse_bias_gelu,
+    fuse_ln_residual,
 )
 from utils import perf_model, get_model
 
@@ -38,7 +39,9 @@ def optimize(mod, config):
             )
         trace_attention(sch[f"encoder.layer.{i}.attention"], config)
         replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
-        fuse_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
+        # May degrade performance for BERT
+        # fuse_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
+        fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
         if sch.world_size > 1:
             shard_mlp(
                 sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
