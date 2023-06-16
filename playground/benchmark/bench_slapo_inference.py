@@ -28,18 +28,16 @@ bs = args.bs
 
 def optimize(mod, config):
     sch = slapo.create_schedule(mod)
-    if dist.get_world_size() == 1:
-        mod, _ = slapo.build(sch, init_weights=mod._init_weights)
-        return mod
     for i in range(config.num_hidden_layers):
-        shard_attention(
-            sch[f"encoder.layer.{i}.attention"],
-            names=["self.query", "self.key", "self.value", "output.dense"],
-            attrs=["self.num_attention_heads", "self.all_head_size"],
-        )
-        shard_mlp(
-            sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
-        )
+        if sch.world_size > 1:
+            shard_attention(
+                sch[f"encoder.layer.{i}.attention"],
+                names=["self.query", "self.key", "self.value", "output.dense"],
+                attrs=["self.num_attention_heads", "self.all_head_size"],
+            )
+            shard_mlp(
+                sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
+            )
         trace_attention(sch[f"encoder.layer.{i}.attention"], config)
         replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
     mod, _ = slapo.build(sch, init_weights=mod._init_weights)
