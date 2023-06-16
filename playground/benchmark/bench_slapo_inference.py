@@ -26,11 +26,11 @@ def optimize(mod, config):
     for i in range(config.num_hidden_layers):
         shard_attention(
             sch[f"encoder.layer.{i}.attention"],
-            name=["self.query", "self.key", "self.value", "output.dense"],
-            attr="self.num_attention_heads",
+            names=["self.query", "self.key", "self.value", "output.dense"],
+            attrs=["self.num_attention_heads", "self.all_head_size"],
         )
         shard_mlp(
-            sch[f"encoder.layer.{i}"], name=["intermediate.dense", "output.dense"]
+            sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
         )
     mod, _ = slapo.build(sch)
     return mod
@@ -38,6 +38,7 @@ def optimize(mod, config):
 
 if __name__ == "__main__":
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
+    torch.cuda.set_device(args.local_rank)
 
     for kernel_opt in [False]:
         mod, config, seq_len = get_model(args.name)
