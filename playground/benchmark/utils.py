@@ -26,7 +26,7 @@ def get_model(name, meta=False):
         mod = AutoModel.from_pretrained(model_name)
     mod.eval()
     mod.to(torch.float16)
-    return mod, seq_len
+    return mod, config, seq_len
 
 
 def perf_model(mod, input_tensor):

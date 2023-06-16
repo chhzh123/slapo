@@ -23,7 +23,7 @@ if __name__ == "__main__":
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
 
     for kernel_opt in [False, True]:
-        mod, seq_len = get_model(args.name)
+        mod, _, seq_len = get_model(args.name)
         # Initialize the DeepSpeed-Inference engine
         # https://www.deepspeed.ai/tutorials/inference-tutorial/
         ds_engine = deepspeed.init_inference(
