@@ -16,9 +16,9 @@ from torch.fx._symbolic_trace import HAS_VARSTUFF, PH, _assert_is_none, _patch_f
 from torch.fx.graph import _PyTreeCodeGen, _PyTreeInfo
 from torch.fx.node import base_types
 
-from .logger import get_logger
+from .logger import get_logger, ERROR
 
-logger = get_logger()
+logger = get_logger("tracer", ERROR)
 
 
 def is_fx_tracable(mod):
