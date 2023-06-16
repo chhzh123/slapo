@@ -29,24 +29,44 @@ def get_model(name, meta=False):
     return mod, config, seq_len
 
 
-def perf_model(mod, input_tensor):
+def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100):
     """Measure the performance of a mod with certain resharding schemes"""
     # warmup
     torch.cuda.empty_cache()
     mod.to(torch.float16)
     mod.eval()
     mod.to("cuda")
-    for _ in range(10):
-        mod(input_tensor)
-
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
+    if use_cuda_graph:
+        s = torch.cuda.Stream()
+        fake_inputs = torch.ones_like(input_tensor, dtype=torch.long, device="cuda")
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(10):
+                mod(fake_inputs)
+        torch.cuda.current_stream().wait_stream(s)
 
-    start_event.record()
-    iters = 100
-    for _ in range(iters):
-        mod(input_tensor)
-    end_event.record()
-    torch.cuda.synchronize()
+        # capture
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            mod(fake_inputs)
+
+        input_tensor.copy_(fake_inputs)
+        start_event.record()
+        for _ in range(iters):
+            g.replay()
+        end_event.record()
+        torch.cuda.synchronize()
+    else:
+        for _ in range(10):
+            mod(input_tensor)
+
+        start_event.record()
+        for _ in range(iters):
+            mod(input_tensor)
+        end_event.record()
+        torch.cuda.synchronize()
+
     if dist.get_rank() == 0:
         print(f"{start_event.elapsed_time(end_event) / iters:.3f} ms")

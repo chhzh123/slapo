@@ -10,39 +10,18 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
-import deepspeed
 from transformers import LlamaModel, AutoConfig
 
 import slapo
 from slapo.pattern import call_module
 from slapo.logger import get_logger
+from utils import perf_model
 
 logger = get_logger(__name__)
 
 # Config for verification
 bs = 1
 seq_len = 2048
-
-
-def perf_model(mod, input_tensor):
-    """Measure the performance of a mod with certain resharding schemes"""
-    # warmup
-    mod.eval()
-    # mod.to(torch.float16)
-    for _ in range(10):
-        mod(input_tensor)
-
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-
-    start_event.record()
-    iters = 40
-    for _ in range(iters):
-        mod(input_tensor)
-    end_event.record()
-    torch.cuda.synchronize()
-    if dist.get_rank() == 0:
-        print(f"{start_event.elapsed_time(end_event) / iters:.3f} ms")
 
 
 def trace_module(sch, config):
@@ -243,8 +222,8 @@ def test_schemes(init_dist):
     torch.cuda.set_device(dist.get_rank())
     device = torch.cuda.current_device()
 
-    # config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
-    config = AutoConfig.from_pretrained("lmsys/vicuna-13b-delta-v1.1")
+    config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
+    # config = AutoConfig.from_pretrained("lmsys/vicuna-13b-delta-v1.1")
     config.use_cache = False
     config.pad_token_id = 0
     with slapo.init_empty_weights():
@@ -273,13 +252,5 @@ if __name__ == "__main__":
     mod.to(f"cuda:{dist.get_rank()}")
     mod.to(torch.float16)
 
-    ds_engine = deepspeed.init_inference(
-        mod,
-        mp_size=1,
-        dtype=torch.float16,
-        checkpoint=None,
-        replace_with_kernel_inject=False,
-    )
-    mod = ds_engine.module
-    perf_model(mod, input_ids)
+    perf_model(mod, input_ids, use_cuda_graph=True)
     del mod
