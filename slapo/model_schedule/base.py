@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 
-def trace_attention(sch, config, input_names = ["hidden_states"]):
+def trace_attention(sch, config, input_names=["hidden_states"]):
     sig = inspect.signature(sch.mod.forward)
     concrete_args = {
         p.name: p.default for p in sig.parameters.values() if p.name not in input_names
@@ -84,3 +84,16 @@ def replace_sdp(sch, config):
             return F.scaled_dot_product_attention(query_layer, key_layer, value_layer)
 
     sch.replace(EfficientAttention(), subgraphs)
+
+
+def fuse_bias_gelu(sch, name="dense"):
+    sch[name].decompose()
+    sch.trace(flatten=True)
+
+    def pattern(x, bias):
+        x = F.gelu(bias + x)
+        return x
+
+    subgraph = sch.find(pattern)
+    assert len(subgraph[0]) == 2
+    sch.fuse(subgraph, compiler="TorchScript", name="BiasGeLU")

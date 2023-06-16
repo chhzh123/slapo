@@ -14,6 +14,7 @@ from slapo.model_schedule.base import (
     shard_mlp,
     trace_attention,
     replace_sdp,
+    fuse_bias_gelu,
 )
 from utils import perf_model, get_model
 
@@ -35,11 +36,13 @@ def optimize(mod, config):
                 names=["self.query", "self.key", "self.value", "output.dense"],
                 attrs=["self.num_attention_heads", "self.all_head_size"],
             )
+        trace_attention(sch[f"encoder.layer.{i}.attention"], config)
+        replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
+        fuse_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
+        if sch.world_size > 1:
             shard_mlp(
                 sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
             )
-        trace_attention(sch[f"encoder.layer.{i}.attention"], config)
-        replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
     mod, _ = slapo.build(sch, init_weights=mod._init_weights)
     return mod
 
