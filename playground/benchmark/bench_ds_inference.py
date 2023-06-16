@@ -62,9 +62,9 @@ def get_gpt_model():
 def get_llama_model():
     from transformers import LlamaModel, AutoConfig
 
-    # config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
+    config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
     # elinas/llama-7b-hf-transformers-4.29
-    config = AutoConfig.from_pretrained("lmsys/vicuna-13b-delta-v1.1")
+    # config = AutoConfig.from_pretrained("lmsys/vicuna-13b-delta-v1.1")
     config.use_cache = False
     mod = LlamaModel(config)
     mod.eval()
@@ -79,11 +79,9 @@ def get_llama_model():
 def get_opt_model():
     from transformers import OPTModel, AutoConfig
 
-    # config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
-    # elinas/llama-7b-hf-transformers-4.29
     config = AutoConfig.from_pretrained("facebook/opt-13b")
     config.use_cache = False
-    with deepspeed.OnDevice(dtype=torch.float16, device="meta", enabled=False):
+    with deepspeed.OnDevice(dtype=torch.float16, device="meta"):
         mod = OPTModel(config)
     mod.eval()
     mod.to(torch.float16)
@@ -144,6 +142,7 @@ if __name__ == "__main__":
                 mod,
                 mp_size=dist.get_world_size(),
                 dtype=torch.float16,
+                max_out_tokens=2048,
                 checkpoint=None,  # "checkpoints.json",
                 replace_with_kernel_inject=kernel_opt,
             )
