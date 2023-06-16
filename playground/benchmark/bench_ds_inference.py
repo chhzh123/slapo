@@ -2,14 +2,28 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+from argparse import ArgumentParser
 
 import torch
 import torch.distributed as dist
 import deepspeed
-from argparse import ArgumentParser
+from transformers import AutoModel, AutoConfig
 
 parser = ArgumentParser()
 parser.add_argument("--name", required=True, type=str, help="model_name")
+parser.add_argument("--local_rank", required=True, type=int, help="local_rank")
+parser.add_argument("--bs", default=1, type=int, help="batch size")
+args = parser.parse_args()
+
+bs = args.bs
+
+MODEL_SETTINGS = {
+    "bert": ("bert-large-uncased", 512),
+    "gpt": ("EleutherAI/gpt-neo-1.3B", 1024),
+    "llama": ("decapoda-research/llama-7b-hf", 2048),
+    "vicuna": ("lmsys/vicuna-13b-delta-v1.1", 2048),
+    "opt": ("facebook/opt-13b", 2048),
+}
 
 
 def perf_model(mod, input_tensor):
@@ -34,119 +48,36 @@ def perf_model(mod, input_tensor):
         print(f"{start_event.elapsed_time(end_event) / iters:.3f} ms")
 
 
-def get_bert_model():
-    from transformers import BertLMHeadModel, AutoConfig
-
-    config = AutoConfig.from_pretrained("bert-large-uncased")
-    mod = BertLMHeadModel(config)
-    bs, seq_len = 8, 512
-    input_ids = torch.ones(
-        bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
-    )
-    return mod, input_ids
-
-
-def get_gpt_model():
-    from transformers import GPTNeoModel, AutoConfig
-
-    config = AutoConfig.from_pretrained("EleutherAI/gpt-neo-1.3B")
-    config.use_cache = False
-    mod = GPTNeoModel(config)
-    bs, seq_len = 4, 1024
-    input_ids = torch.ones(
-        bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
-    )
-    return mod, input_ids
-
-
-def get_llama_model():
-    from transformers import LlamaModel, AutoConfig
-
-    config = AutoConfig.from_pretrained("decapoda-research/llama-7b-hf")
-    # elinas/llama-7b-hf-transformers-4.29
-    # config = AutoConfig.from_pretrained("lmsys/vicuna-13b-delta-v1.1")
-    config.use_cache = False
-    mod = LlamaModel(config)
+def get_model(name):
+    model_name, seq_len = MODEL_SETTINGS[name]
+    if dist.get_rank() == 0:
+        print(f"Loading {model_name} with seq_len {seq_len}")
+    config = AutoConfig.from_pretrained(model_name)
+    if model_name != "bert":
+        config.use_cache = False
+    mod = AutoModel.from_pretrained(model_name)
     mod.eval()
     mod.to(torch.float16)
-    bs, seq_len = 1, 2048
-    input_ids = torch.ones(
-        bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
-    )
-    return mod, input_ids
-
-
-def get_opt_model():
-    from transformers import OPTModel, AutoConfig
-
-    config = AutoConfig.from_pretrained("facebook/opt-13b")
-    config.use_cache = False
-    with deepspeed.OnDevice(dtype=torch.float16, device="meta"):
-        mod = OPTModel(config)
-    mod.eval()
-    mod.to(torch.float16)
-    bs, seq_len = 1, 2048
-    input_ids = torch.ones(
-        bs, seq_len, dtype=torch.long, device=f"cuda:{dist.get_rank()}"
-    )
-    return mod, input_ids
-
-
-def generate_json(model_name, checkpoint_path=None):
-    import io
-    from pathlib import Path
-    from huggingface_hub import snapshot_download
-    import json
-
-    if checkpoint_path is None:
-        repo_root = snapshot_download(
-            model_name,
-            allow_patterns=["*"],
-            cache_dir=os.getenv("TRANSFORMERS_CACHE", None),
-            ignore_patterns=["*.safetensors"],
-            local_files_only=False,
-            revision=None,
-        )
-    else:
-        assert os.path.exists(
-            checkpoint_path
-        ), f"Checkpoint path {checkpoint_path} does not exist"
-        repo_root = checkpoint_path
-
-    if os.path.exists(os.path.join(repo_root, "ds_inference_config.json")):
-        checkpoints_json = os.path.join(repo_root, "ds_inference_config.json")
-    else:
-        checkpoints_json = "checkpoints.json"
-
-        with io.open(checkpoints_json, "w", encoding="utf-8") as f:
-            file_list = [
-                str(entry).split("/")[-1]
-                for entry in Path(repo_root).rglob("*.[bp][it][n]")
-                if entry.is_file()
-            ]
-            data = {"type": "BLOOM", "checkpoints": file_list, "version": 1.0}
-            json.dump(data, f)
-
-    return repo_root, checkpoints_json
+    return mod, seq_len
 
 
 if __name__ == "__main__":
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
 
     for kernel_opt in [False, True]:
-        for mod, input_ids in [get_opt_model()]:
+        for mod, seq_len in [get_model(args.name)]:
             # Initialize the DeepSpeed-Inference engine
             # https://www.deepspeed.ai/tutorials/inference-tutorial/
-            # repo_root, checkpoints_json = generate_json("facebook/opt-13b", "ds_inference_config.json")
             ds_engine = deepspeed.init_inference(
                 mod,
                 mp_size=dist.get_world_size(),
                 dtype=torch.float16,
-                max_out_tokens=2048,
-                checkpoint=None,  # "checkpoints.json",
+                max_out_tokens=seq_len,
+                checkpoint=None,
                 replace_with_kernel_inject=kernel_opt,
             )
             mod = ds_engine.module
+            input_ids = torch.ones((bs, seq_len), dtype=torch.long, device="cuda")
             if dist.get_rank() == 0:
                 print(mod)
             perf_model(mod, input_ids)
