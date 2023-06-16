@@ -9,7 +9,12 @@ import torch.distributed as dist
 import deepspeed
 
 import slapo
-from slapo.model_schedule.base import shard_attention, shard_mlp
+from slapo.model_schedule.base import (
+    shard_attention,
+    shard_mlp,
+    trace_attention,
+    replace_sdp,
+)
 from utils import perf_model, get_model
 
 parser = ArgumentParser()
@@ -35,6 +40,8 @@ def optimize(mod, config):
         shard_mlp(
             sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
         )
+        trace_attention(sch[f"encoder.layer.{i}.attention"], config)
+        replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
     mod, _ = slapo.build(sch, init_weights=mod._init_weights)
     return mod
 
