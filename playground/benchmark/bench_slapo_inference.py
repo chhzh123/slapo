@@ -17,6 +17,7 @@ from slapo.model_schedule.base import (
     fuse_ln_residual,
 )
 from utils import perf_model, get_model
+from bert_schedule import fuse_gemm_bias_gelu, fuse_ln_residual
 
 parser = ArgumentParser()
 parser.add_argument("--name", required=True, type=str, help="model_name")
@@ -35,6 +36,8 @@ def optimize(mod, config):
         #     sch[f"encoder.layer.{i}.attention.output"], names=["dense", "LayerNorm"]
         # )
         # fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
+        # Use this for ByteTransformer
+        fuse_gemm_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
         if sch.world_size > 1:
             shard_attention(
                 sch[f"encoder.layer.{i}.attention"],
@@ -46,9 +49,14 @@ def optimize(mod, config):
             )
         trace_attention(sch[f"encoder.layer.{i}.attention"], config)
         replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
+        fuse_ln_residual(
+            sch[f"encoder.layer.{i}.attention"],
+            names=["output.dense", "output.LayerNorm"],
+        )
+        fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
     mod, _ = slapo.build(sch, init_weights=mod._init_weights)
-    if sch.world_size == 1:
-        mod = torch.compile(mod, fullgraph=True, backend="inductor")
+    # if sch.world_size == 1:
+    #     mod = torch.compile(mod, backend="inductor")
     return mod
 
 
