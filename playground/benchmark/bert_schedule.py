@@ -20,13 +20,7 @@ def fuse_gemm_bias_gelu(sch, name="dense"):
             self.bias = bias.contiguous().to(torch.float16).to("cuda")
 
         def forward(self, x):
-            out = torch.zeros(
-                x.shape[:-1] + (self.weight.shape[1],),
-                device=x.device,
-                dtype=torch.float16,
-            )
-            torch.ops.bt.gemm_bias_gelu(x, self.weight, self.bias, out)
-            return out
+            return torch.ops.bt.gemm_bias_gelu(x, self.weight, self.bias)
 
     sch.replace(GEMMBiasGeLU(sch[name].mod.weight, sch[name].mod.bias), subgraph)
 
@@ -54,11 +48,9 @@ def fuse_ln_residual(sch, names=["dense", "LayerNorm"]):
             self.bias = bias
 
         def forward(self, hidden_states, residual):
-            cuda_c = torch.zeros_like(hidden_states, dtype=torch.float16, device="cuda")
-            torch.ops.bt.add_bias_layernorm(
-                hidden_states, residual, self.weight, self.bias, cuda_c
+            return torch.ops.bt.add_bias_layernorm(
+                hidden_states, residual, self.weight, self.bias
             )
-            return cuda_c
 
     subgraph = sch.find(pattern)
     assert len(subgraph[0]) == 3

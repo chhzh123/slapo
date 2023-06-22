@@ -20,10 +20,10 @@ def get_model(name, meta=False):
     if dist.get_rank() == 0:
         print(f"Loading {model_name} with seq_len {seq_len}")
     config = AutoConfig.from_pretrained(model_name)
-    if model_name != "bert":
+    if name != "bert":
         config.use_cache = False
     with slapo.init_empty_weights(enable=meta):
-        mod = AutoModel.from_pretrained(model_name)
+        mod = AutoModel.from_pretrained(model_name, config=config)
     mod.eval()
     mod.to(torch.float16)
     return mod, config, seq_len

@@ -31,8 +31,8 @@ bs = args.bs
 
 def optimize(mod, config):
     sch = slapo.create_schedule(mod)
-    if sch.world_size > 1:
-        shard_word_embedding(sch, config.vocab_size, "embeddings.word_embeddings")
+    # if sch.world_size > 1:
+    #     shard_word_embedding(sch, config.vocab_size, "embeddings.word_embeddings")
     for i in range(config.num_hidden_layers):
         # May degrade performance for BERT
         # fuse_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
@@ -40,8 +40,6 @@ def optimize(mod, config):
         #     sch[f"encoder.layer.{i}.attention.output"], names=["dense", "LayerNorm"]
         # )
         # fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
-        # Use this for ByteTransformer
-        fuse_gemm_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
         if sch.world_size > 1:
             shard_attention(
                 sch[f"encoder.layer.{i}.attention"],
@@ -51,6 +49,8 @@ def optimize(mod, config):
             shard_mlp(
                 sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
             )
+        # Use this for ByteTransformer
+        fuse_gemm_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
         trace_attention(sch[f"encoder.layer.{i}.attention"], config)
         # fuse_qkv(sch[f"encoder.layer.{i}.attention"], config=config)
         replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
@@ -75,5 +75,5 @@ if __name__ == "__main__":
         input_ids = torch.ones((bs, seq_len), dtype=torch.long, device="cuda")
         if dist.get_rank() == 0:
             print(mod)
-        perf_model(mod, input_ids, use_cuda_graph=True)
+        perf_model(mod, input_ids, use_cuda_graph=dist.get_world_size() == 1)
         del mod
