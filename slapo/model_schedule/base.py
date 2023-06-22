@@ -5,6 +5,7 @@ import math
 import inspect
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
@@ -52,6 +53,64 @@ def trace_attention(sch, config, input_names=["hidden_states"]):
         concrete_args=concrete_args,
         config=config,
     )
+
+
+class FusedQKV(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        world_size: int,
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.world_size = world_size
+        self.head_dim = embed_dim // num_heads
+        self.fused_linear = nn.Linear(
+            embed_dim, embed_dim * 3 // self.world_size, bias=bias
+        )
+
+    def forward(self, hidden_states: torch.Tensor):
+        bsz, tgt_len, _ = hidden_states.size()
+        qkv = self.fused_linear(hidden_states)
+        reshaped_qkv = (
+            qkv.view(bsz, tgt_len, 3 * self.num_heads // self.world_size, self.head_dim)
+            .transpose(1, 2)
+            .contiguous()
+        )
+        reshaped_qkv = reshaped_qkv.view(
+            bsz, 3, self.num_heads // self.world_size, tgt_len, self.head_dim
+        )
+        q, k, v = reshaped_qkv.unbind(dim=1)
+
+        query_states = q.contiguous()
+        key_states = k.contiguous()
+        value_states = v.contiguous()
+
+        return query_states, key_states, value_states
+
+
+def fuse_qkv(sch, config, name_pattern=r"self.(query|key|value)"):
+    def qkv_pattern(x):
+        x = call_module(name_pattern, x)
+        new_x_shape = x.size()[:-1] + (
+            config.num_attention_heads,
+            int(config.hidden_size / config.num_attention_heads),
+        )
+        x = x.view(new_x_shape)
+        return x.permute(0, 2, 1, 3)
+
+    subgraphs = sch.find(qkv_pattern)
+    assert len(subgraphs) == 3
+    fused_qkv = FusedQKV(
+        config.hidden_size, config.num_attention_heads, sch.world_size, bias=True
+    )
+    # fused_qkv = torch.compile(fused_qkv.cuda(), mode="reduce-overhead", backend="inductor")
+    # for _ in range(10):
+    #     fused_qkv(torch.randn(1, 512, config.hidden_size, device="cuda"))
+    sch.replace(fused_qkv, subgraphs)
 
 
 def shard_attention(

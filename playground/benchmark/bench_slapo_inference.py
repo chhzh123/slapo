@@ -13,6 +13,7 @@ from slapo.model_schedule.base import (
     shard_mlp,
     trace_attention,
     replace_sdp,
+    fuse_qkv,
     fuse_bias_gelu,
     fuse_ln_residual,
     shard_word_embedding,
@@ -51,6 +52,7 @@ def optimize(mod, config):
                 sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
             )
         trace_attention(sch[f"encoder.layer.{i}.attention"], config)
+        # fuse_qkv(sch[f"encoder.layer.{i}.attention"], config=config)
         replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
         fuse_ln_residual(
             sch[f"encoder.layer.{i}.attention"],
