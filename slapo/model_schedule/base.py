@@ -6,8 +6,38 @@ import inspect
 
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 
 from slapo.pattern import call_module
+
+
+def shard_word_embedding(sch, vocab_size, word_embed_name="embeddings.word_embeddings"):
+    if sch.world_size == 1:
+        return
+
+    # Embedding
+    sch[word_embed_name].shard("weight", axis=0)
+    # Build the mask
+    vocab_start_index = sch.rank * vocab_size // sch.world_size
+    vocab_end_index = (sch.rank + 1) * vocab_size // sch.world_size
+
+    def fwd_pre_hook(_module, _input):
+        # Mask the input
+        input_mask = (_input[0] < vocab_start_index) | (_input[0] >= vocab_end_index)
+        masked_input = _input[0].clone() - vocab_start_index
+        masked_input[input_mask] = 0
+        return masked_input
+
+    sch[word_embed_name].sync(mode="fwd_pre", sync_op_or_fn=fwd_pre_hook)
+
+    def fwd_post_hook(_module, _input, output):
+        # Mask the output embedding. Note that the input is already masked.
+        output[_input[0] == 0, :] = 0.0
+        # Reduce across all the model parallel GPUs
+        dist.all_reduce(output, op=dist.ReduceOp.SUM, group=sch.group)
+        return output
+
+    sch[word_embed_name].sync(mode="fwd_post", sync_op_or_fn=fwd_post_hook)
 
 
 def trace_attention(sch, config, input_names=["hidden_states"]):

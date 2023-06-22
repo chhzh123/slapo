@@ -15,6 +15,7 @@ from slapo.model_schedule.base import (
     replace_sdp,
     fuse_bias_gelu,
     fuse_ln_residual,
+    shard_word_embedding,
 )
 from utils import perf_model, get_model
 from bert_schedule import fuse_gemm_bias_gelu, fuse_ln_residual
@@ -29,6 +30,8 @@ bs = args.bs
 
 def optimize(mod, config):
     sch = slapo.create_schedule(mod)
+    if sch.world_size > 1:
+        shard_word_embedding(sch, config.vocab_size, "embeddings.word_embeddings")
     for i in range(config.num_hidden_layers):
         # May degrade performance for BERT
         # fuse_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
