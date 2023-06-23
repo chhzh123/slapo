@@ -40,10 +40,12 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100):
     end_event = torch.cuda.Event(enable_timing=True)
     if use_cuda_graph:
         s = torch.cuda.Stream()
-        fake_inputs = torch.ones_like(input_tensor, dtype=torch.long, device="cuda")
+        fake_inputs = torch.ones_like(
+            input_tensor, dtype=input_tensor.dtype, device="cuda"
+        )
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
-            for _ in range(10):
+            for _ in range(15):
                 mod(fake_inputs)
         torch.cuda.current_stream().wait_stream(s)
 
@@ -69,4 +71,6 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100):
         torch.cuda.synchronize()
 
     if dist.get_rank() == 0:
-        print(f"{start_event.elapsed_time(end_event) / iters:.3f} ms")
+        print(
+            f"# GPUs: {dist.get_world_size()} Time: {start_event.elapsed_time(end_event) / iters:.3f} ms"
+        )

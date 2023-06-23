@@ -66,14 +66,15 @@ def optimize(mod, config):
 
 
 if __name__ == "__main__":
+    # https://pytorch.org/docs/stable/notes/cuda.html#id5
+    os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "0"
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
     torch.cuda.set_device(dist.get_rank())
 
-    for kernel_opt in [False]:
-        mod, config, seq_len = get_model(args.name)
-        mod = optimize(mod, config)
-        input_ids = torch.ones((bs, seq_len), dtype=torch.long, device="cuda")
-        if dist.get_rank() == 0:
-            print(mod)
-        perf_model(mod, input_ids, use_cuda_graph=dist.get_world_size() == 1)
-        del mod
+    mod, config, seq_len = get_model(args.name)
+    mod = optimize(mod, config)
+    input_ids = torch.ones((bs, seq_len), dtype=torch.long, device="cuda")
+    if dist.get_rank() == 0:
+        print(mod)
+    perf_model(mod, input_ids, use_cuda_graph=True)
+    del mod
