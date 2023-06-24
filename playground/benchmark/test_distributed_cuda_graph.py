@@ -1,3 +1,5 @@
+# https://github.com/bottler/pytorch/blob/1bacd4c58bf06765498cfc497f8b9ab76f57c4ad/test/distributed/test_c10d_nccl.py
+
 import os
 import torch
 import torch.distributed as dist

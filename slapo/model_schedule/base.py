@@ -41,7 +41,7 @@ def shard_word_embedding(sch, vocab_size, word_embed_name="embeddings.word_embed
     sch[word_embed_name].sync(mode="fwd_post", sync_op_or_fn=fwd_post_hook)
 
 
-def trace_attention(sch, config, input_names=["hidden_states"]):
+def trace_attention(sch, config, input_names=["hidden_states"], leaf_modules=[]):
     sig = inspect.signature(sch.mod.forward)
     concrete_args = {
         p.name: p.default for p in sig.parameters.values() if p.name not in input_names
@@ -50,10 +50,10 @@ def trace_attention(sch, config, input_names=["hidden_states"]):
         recursive=False,
         flatten=True,
         tracer="huggingface",
+        leaf_modules=leaf_modules,
         concrete_args=concrete_args,
         config=config,
     )
-
 
 class FusedQKV(nn.Module):
     def __init__(

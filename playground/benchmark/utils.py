@@ -51,6 +51,7 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100):
 
         # capture
         g = torch.cuda.CUDAGraph()
+        torch.cuda.synchronize()
         with torch.cuda.graph(g):
             mod(fake_inputs)
 

@@ -25,33 +25,39 @@ def fuse_gemm_bias_gelu(sch, name="dense"):
     sch.replace(GEMMBiasGeLU(sch[name].mod.weight, sch[name].mod.bias), subgraph)
 
 
-def fuse_ln_residual(sch, names=["dense", "LayerNorm"]):
+def fuse_ln_residual(sch, names=["dense", "LayerNorm"], lib="FasterTransformer"):
     dense, ln = names
-    if not isinstance(sch.mod, fx.GraphModule):
-        sch.trace(recursive=False, flatten=True, leaf_modules=["Linear"])
-        weight = sch[ln].mod.weight
-        bias = sch[ln].mod.bias
-    else:
-        weight = getattr(sch["output"].mod, "LayerNorm").weight
-        bias = getattr(sch["output"].mod, "LayerNorm").bias
-    torch.ops.load_library("/home/ubuntu/ByteTransformer/torch/build/libbt.so")
+    assert not isinstance(sch.mod, fx.GraphModule)
+    sch[dense].decompose()
+    sch.trace(recursive=False, flatten=True)
 
-    def pattern(hidden_states, residual):
-        x = F.dropout(hidden_states)  # bias has been added in the previous dense layer
+    def pattern(x, bias, residual):
+        x = F.dropout(x + bias)
         x = call_module(ln, x + residual)
         return x
 
     class BiasLayerNorm(torch.nn.Module):
-        def __init__(self, weight, bias):
+        def __init__(self, weight, bias, eps=1e-5):
             super().__init__()
             self.weight = weight
             self.bias = bias
+            self.eps = eps
+            if lib == "FasterTransformer":
+                torch.ops.load_library(
+                    "/home/ubuntu/FasterTransformer/torch/build/libft.so"
+                )
+                self.fn = torch.ops.ft.add_bias_residual_layernorm
+            else:
+                torch.ops.load_library(
+                    "/home/ubuntu/ByteTransformer/torch/build/libbt.so"
+                )
+                self.fn = torch.ops.bt.add_bias_residual_layernorm
 
-        def forward(self, hidden_states, residual):
-            return torch.ops.bt.add_bias_layernorm(
-                hidden_states, residual, self.weight, self.bias
-            )
+        def forward(self, hidden_states, dense_bias, residual):
+            return self.fn(hidden_states, residual, dense_bias, self.weight, self.bias)
 
     subgraph = sch.find(pattern)
-    assert len(subgraph[0]) == 3
-    sch.replace(BiasLayerNorm(weight, bias), subgraph)
+    assert len(subgraph[0]) == 4
+    sch.replace(
+        BiasLayerNorm(sch[ln].mod.weight, sch[ln].mod.bias, sch[ln].mod.eps), subgraph
+    )

@@ -51,12 +51,14 @@ def optimize(mod, config):
             )
         # Use this for ByteTransformer
         fuse_gemm_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
-        trace_attention(sch[f"encoder.layer.{i}.attention"], config)
+        trace_attention(
+            sch[f"encoder.layer.{i}.attention"], config, leaf_modules=["BertSelfOutput"]
+        )
         # fuse_qkv(sch[f"encoder.layer.{i}.attention"], config=config)
         replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
         fuse_ln_residual(
-            sch[f"encoder.layer.{i}.attention"],
-            names=["output.dense", "output.LayerNorm"],
+            sch[f"encoder.layer.{i}.attention.output"],
+            names=["dense", "LayerNorm"],
         )
         fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
     mod, _ = slapo.build(sch, init_weights=mod._init_weights)

@@ -241,6 +241,7 @@ def test_schemes(init_dist):
 
 
 if __name__ == "__main__":
+    os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "0"
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
 
     input_ids = torch.ones(
