@@ -54,7 +54,9 @@ def fuse_ln_residual(sch, names=["dense", "LayerNorm"], lib="FasterTransformer")
                 self.fn = torch.ops.bt.add_bias_residual_layernorm
 
         def forward(self, hidden_states, dense_bias, residual):
-            return self.fn(hidden_states, residual, dense_bias, self.weight, self.bias)
+            return self.fn(
+                hidden_states, residual, dense_bias, self.weight, self.bias, self.eps
+            )
 
     subgraph = sch.find(pattern)
     assert len(subgraph[0]) == 4
