@@ -1,6 +1,17 @@
 import torch
 from torch import fx
 import torch.nn.functional as F
+import slapo
+from slapo.model_schedule.base import (
+    shard_attention,
+    shard_mlp,
+    trace_attention,
+    replace_sdp,
+    fuse_qkv,
+    fuse_bias_gelu,
+    fuse_ln_residual,
+    shard_word_embedding,
+)
 from slapo.pattern import call_module
 
 
@@ -63,3 +74,40 @@ def fuse_ln_residual(sch, names=["dense", "LayerNorm"], lib="FasterTransformer")
     sch.replace(
         BiasLayerNorm(sch[ln].mod.weight, sch[ln].mod.bias, sch[ln].mod.eps), subgraph
     )
+
+
+def schedule_bert(mod, config):
+    sch = slapo.create_schedule(mod)
+    # if sch.world_size > 1:
+    #     shard_word_embedding(sch, config.vocab_size, "embeddings.word_embeddings")
+    for i in range(config.num_hidden_layers):
+        # May degrade performance for BERT
+        # fuse_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
+        # fuse_ln_residual(
+        #     sch[f"encoder.layer.{i}.attention.output"], names=["dense", "LayerNorm"]
+        # )
+        # fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
+        if sch.world_size > 1:
+            shard_attention(
+                sch[f"encoder.layer.{i}.attention"],
+                names=["self.query", "self.key", "self.value", "output.dense"],
+                attrs=["self.num_attention_heads", "self.all_head_size"],
+            )
+            shard_mlp(
+                sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
+            )
+        # Use this for ByteTransformer
+        fuse_gemm_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
+        trace_attention(
+            sch[f"encoder.layer.{i}.attention"], config, leaf_modules=["BertSelfOutput"]
+        )
+        # fuse_qkv(sch[f"encoder.layer.{i}.attention"], config=config)
+        replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
+        fuse_ln_residual(
+            sch[f"encoder.layer.{i}.attention.output"],
+            names=["dense", "LayerNorm"],
+        )
+        fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
+    # if sch.world_size == 1:
+    #     mod = torch.compile(mod, backend="inductor")
+    return sch
