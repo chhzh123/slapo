@@ -18,10 +18,12 @@ MODEL_SETTINGS = {
 def get_model(name, meta=False):
     model_name, seq_len = MODEL_SETTINGS[name]
     if dist.get_rank() == 0:
-        print(f"Loading {model_name} with seq_len {seq_len}")
+        print(f"Loading {model_name} with seq_len {seq_len} (meta={meta})")
     config = AutoConfig.from_pretrained(model_name)
     if name != "bert":
         config.use_cache = False
+    if name == "llama":
+        config.pad_token_id = 0
     with slapo.init_empty_weights(enable=meta):
         mod = AutoModel.from_pretrained(model_name, config=config)
     mod.eval()

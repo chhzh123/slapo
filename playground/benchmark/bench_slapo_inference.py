@@ -10,6 +10,7 @@ import torch.distributed as dist
 import slapo
 from utils import perf_model, get_model
 from bert_schedule import schedule_bert
+from llama_schedule import schedule_llama
 
 parser = ArgumentParser()
 parser.add_argument("--name", required=True, type=str, help="model_name")
@@ -20,6 +21,7 @@ bs = args.bs
 
 SCHEDULE_MAP = {
     "bert": schedule_bert,
+    "llama": schedule_llama,
 }
 
 
@@ -35,7 +37,7 @@ if __name__ == "__main__":
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
     torch.cuda.set_device(dist.get_rank())
 
-    mod, config, seq_len = get_model(args.name)
+    mod, config, seq_len = get_model(args.name, meta=True)
     sch = create_optimized_schedule(args.name, mod, config)
     mod, _ = slapo.build(sch, init_weights=mod._init_weights)
     input_ids = torch.ones((bs, seq_len), dtype=torch.long, device="cuda")

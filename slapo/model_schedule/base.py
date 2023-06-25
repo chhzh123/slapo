@@ -55,6 +55,7 @@ def trace_attention(sch, config, input_names=["hidden_states"], leaf_modules=[])
         config=config,
     )
 
+
 class FusedQKV(nn.Module):
     def __init__(
         self,
@@ -138,8 +139,12 @@ def shard_attention(
     sch[out].sync("fwd_post", sync_op_or_fn="all_reduce")
     # Update the number of heads
     for attr in attrs:
-        path, attr = attr.rsplit(".", 1)
-        subsch = sch[path]
+        if "." not in attr:
+            path, attr = "", attr
+            subsch = sch
+        else:
+            path, attr = attr.rsplit(".", 1)
+            subsch = sch[path]
         if hasattr(subsch.mod, attr):
             setattr(subsch.mod, attr, getattr(subsch.mod, attr) // sch.world_size)
         else:
