@@ -146,10 +146,19 @@ def replace_layernorm(sch, names=["input_layernorm", "post_attention_layernorm"]
         )
 
 
+def replace_silu(sch, name="act_fn"):
+    # Since there are no bias for MLP in LLaMA, no need to fuse bias
+    class FTSiLU(torch.nn.Module):
+        def forward(self, hidden_states):
+            return torch.ops.ft.silu(hidden_states)
+
+    sch[name].replace(FTSiLU())
+
+
 def schedule_llama(mod, config):
     sch = slapo.create_schedule(mod)
-    if sch.world_size > 1:
-        shard_word_embedding(sch, config.vocab_size, "embed_tokens")
+    # if sch.world_size > 1:
+    #     shard_word_embedding(sch, config.vocab_size, "embed_tokens")
     replace_layernorm(sch, names=["norm"])
     for i in range(config.num_hidden_layers):
         replace_layernorm(sch[f"layers.{i}"])
@@ -170,6 +179,7 @@ def schedule_llama(mod, config):
         )
         fix_reshape(sch[f"layers.{i}.self_attn"])
         replace_sdp(sch[f"layers.{i}.self_attn"], config)
+        replace_silu(sch[f"layers.{i}.mlp"])
         # fuse_ln_residual(
         #     sch[f"encoder.layer.{i}.attention.output"],
         #     names=["dense", "LayerNorm"],
