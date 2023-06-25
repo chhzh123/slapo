@@ -14,6 +14,7 @@ parser = ArgumentParser()
 parser.add_argument("--name", required=True, type=str, help="model_name")
 parser.add_argument("--local_rank", required=True, type=int, help="local_rank")
 parser.add_argument("--bs", default=1, type=int, help="batch size")
+parser.add_argument("--max_seq_len", default=1024, type=int, help="sequence length")
 parser.add_argument("--opt", default=True, type=bool, help="kernel optimization")
 args = parser.parse_args()
 
@@ -24,6 +25,8 @@ if __name__ == "__main__":
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
 
     mod, _, seq_len = get_model(args.name)
+    if seq_len > args.max_seq_len:
+        seq_len = args.max_seq_len
     # Initialize the DeepSpeed-Inference engine
     # https://www.deepspeed.ai/tutorials/inference-tutorial/
     ds_engine = deepspeed.init_inference(
