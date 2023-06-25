@@ -13,6 +13,13 @@ from slapo.pattern import call_module
 
 # from transformers.models.llama.modeling_llama import LlamaPreTrainedModel
 
+# Related issue in FasterTransformer:
+# https://github.com/NVIDIA/FasterTransformer/issues/506
+# https://github.com/void-main/FasterTransformer/blob/f3bd8e681f8bf70141012c5fe621416a36edca46/src/fastertransformer/models/llama/LlamaDecoder.cc
+
+# Pre layernorm
+# layernrom(hidden_states + mha_bias + residual)
+
 
 def fuse_gemm_bias_gelu(sch, name="dense"):
     sch.trace(recursive=False, flatten=True, leaf_modules=["Linear"])
@@ -117,11 +124,35 @@ def fix_reshape(sch):
     sch.replace(new_reshape, reshape_op[0])
 
 
+def replace_layernorm(sch, names=["input_layernorm", "post_attention_layernorm"]):
+    torch.ops.load_library("/home/ubuntu/FasterTransformer/torch/build/libft.so")
+
+    class FTRmsNorm(torch.nn.Module):
+        def __init__(self, weight, eps=1e-5):
+            super().__init__()
+            self.weight = weight
+            self.eps = eps
+
+        def forward(self, hidden_states):
+            return torch.ops.ft.rms_norm(
+                hidden_states,
+                self.weight,
+                self.eps,
+            )
+
+    for name in names:
+        sch[name].replace(
+            FTRmsNorm(sch[name].mod.weight, sch[name].mod.variance_epsilon)
+        )
+
+
 def schedule_llama(mod, config):
     sch = slapo.create_schedule(mod)
     if sch.world_size > 1:
         shard_word_embedding(sch, config.vocab_size, "embed_tokens")
+    replace_layernorm(sch, names=["norm"])
     for i in range(config.num_hidden_layers):
+        replace_layernorm(sch[f"layers.{i}"])
         if sch.world_size > 1:
             shard_attention(
                 sch[f"layers.{i}.self_attn"],
