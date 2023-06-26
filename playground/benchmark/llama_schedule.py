@@ -1,9 +1,9 @@
 import math
 import torch
-from torch import fx
 from torch import nn
 import torch.nn.functional as F
 import slapo
+from slapo.pattern import call_module
 from slapo.model_schedule.base import (
     shard_attention,
     trace_attention,
@@ -14,6 +14,64 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 # Related issue in FasterTransformer:
 # https://github.com/NVIDIA/FasterTransformer/issues/506
 # https://github.com/void-main/FasterTransformer/blob/f3bd8e681f8bf70141012c5fe621416a36edca46/src/fastertransformer/models/llama/LlamaDecoder.cc
+
+
+class FusedQKV(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        world_size: int,
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.world_size = world_size
+        self.head_dim = embed_dim // num_heads
+        self.fused_linear = nn.Linear(
+            embed_dim, embed_dim * 3 // self.world_size, bias=bias
+        )
+
+    def forward(self, hidden_states: torch.Tensor):
+        bsz, tgt_len, _ = hidden_states.size()
+        qkv = self.fused_linear(hidden_states)
+        reshaped_qkv = (
+            qkv.view(bsz, tgt_len, 3 * self.num_heads // self.world_size, self.head_dim)
+            .transpose(1, 2)
+            .contiguous()
+        )
+        reshaped_qkv = reshaped_qkv.view(
+            bsz, 3, self.num_heads // self.world_size, tgt_len, self.head_dim
+        )
+        q, k, v = reshaped_qkv.unbind(dim=1)
+
+        query_states = q.contiguous()
+        key_states = k.contiguous()
+        value_states = v.contiguous()
+
+        return query_states, key_states, value_states
+
+
+def fuse_qkv(sch, config):
+    def qkv_pattern(hidden_states):
+        new_states = call_module(r"[qkv]_proj", hidden_states)
+        new_states.view(
+            1,  # bs (fake number)
+            1024,  # seq_len (fake number)
+            config.num_attention_heads // sch.world_size,
+            config.hidden_size // config.num_attention_heads,
+        ).transpose(1, 2)
+        return new_states
+
+    subgraphs = sch.find(qkv_pattern)
+    assert len(subgraphs) == 3
+    fused_qkv = FusedQKV(
+        config.hidden_size, config.num_attention_heads, sch.world_size, bias=False
+    )
+    fused_qkv = torch.compile(fused_qkv, backend="inductor")
+    # out = fused_qkv(torch.randn(bs, seq_len, config.hidden_size).cuda())
+    sch.replace(fused_qkv, subgraphs)
 
 
 def shard_mlp(sch, names):
@@ -148,6 +206,7 @@ def schedule_llama(mod, config):
             leaf_modules=["LlamaRotaryEmbedding"],
             leaf_functions=[apply_rotary_pos_emb],
         )
+        fuse_qkv(sch[f"layers.{i}.self_attn"], config)
         fix_reshape(sch[f"layers.{i}.self_attn"])
         replace_sdp(sch[f"layers.{i}.self_attn"], config)
         replace_rotary_pos_emb(sch[f"layers.{i}.self_attn"])
