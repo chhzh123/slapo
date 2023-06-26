@@ -41,6 +41,17 @@ def replace_sdp(sch, config):
         attn_output = torch.matmul(attn_weights, value_states)
         return attn_output
 
+    # from slapo.op import FlashAttentionOp
+
+    # class EfficientAttention(torch.nn.Module):
+    #     def __init__(self):
+    #         super().__init__()
+    #         self.op = FlashAttentionOp(attn_op_name="auto", apply_causal_mask=False)
+
+    #     # Be careful of the order of the arguments
+    #     def forward(self, key_layer, query_layer, value_layer):
+    #         return self.op(query_layer, key_layer, value_layer, None, 0)
+
     class EfficientAttention(torch.nn.Module):
         # Be careful of the order of the arguments
         def forward(self, key_layer, query_layer, value_layer):
