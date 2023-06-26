@@ -183,3 +183,5 @@ repo-key
 hparams.yml
 docs/source/gallery
 *.dot
+
+*.nsys*
