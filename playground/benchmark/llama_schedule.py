@@ -3,7 +3,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import slapo
-from slapo.pattern import call_module
+from slapo.pattern import call_module, call_function
 from slapo.model_schedule.base import (
     shard_attention,
     trace_attention,
@@ -23,28 +23,35 @@ class FusedQKV(nn.Module):
         num_heads: int,
         world_size: int,
         bias: bool = True,
+        reshape: bool = True,
     ):
         super().__init__()
         self.embed_dim = embed_dim
-        self.num_heads = num_heads
         self.world_size = world_size
+        self.num_heads = num_heads // self.world_size
         self.head_dim = embed_dim // num_heads
         self.fused_linear = nn.Linear(
             embed_dim, embed_dim * 3 // self.world_size, bias=bias
         )
+        self.reshape = reshape
 
     def forward(self, hidden_states: torch.Tensor):
         bsz, tgt_len, _ = hidden_states.size()
         qkv = self.fused_linear(hidden_states)
-        reshaped_qkv = (
-            qkv.view(bsz, tgt_len, 3 * self.num_heads // self.world_size, self.head_dim)
-            .transpose(1, 2)
-            .contiguous()
-        )
-        reshaped_qkv = reshaped_qkv.view(
-            bsz, 3, self.num_heads // self.world_size, tgt_len, self.head_dim
-        )
-        q, k, v = reshaped_qkv.unbind(dim=1)
+        if not self.reshape:
+            reshaped_qkv = qkv.view(bsz, tgt_len, 3, -1)
+            q, k, v = reshaped_qkv.unbind(dim=2)
+            v = v.view(bsz, tgt_len, self.num_heads, -1).transpose(1, 2)
+        else:
+            reshaped_qkv = (
+                qkv.view(bsz, tgt_len, 3 * self.num_heads, self.head_dim)
+                .transpose(1, 2)
+                .contiguous()
+            )
+            reshaped_qkv = reshaped_qkv.view(
+                bsz, 3, self.num_heads, tgt_len, self.head_dim
+            )
+            q, k, v = reshaped_qkv.unbind(dim=1)
 
         query_states = q.contiguous()
         key_states = k.contiguous()
@@ -67,7 +74,11 @@ def fuse_qkv(sch, config):
     subgraphs = sch.find(qkv_pattern)
     assert len(subgraphs) == 3
     fused_qkv = FusedQKV(
-        config.hidden_size, config.num_attention_heads, sch.world_size, bias=False
+        config.hidden_size,
+        config.num_attention_heads,
+        sch.world_size,
+        bias=False,
+        reshape=False,
     )
     fused_qkv = torch.compile(fused_qkv, backend="inductor")
     # out = fused_qkv(torch.randn(bs, seq_len, config.hidden_size).cuda())
@@ -163,24 +174,44 @@ def replace_silu(sch, name="act_fn"):
     sch[name].replace(FTSiLU())
 
 
-def replace_rotary_pos_emb(sch, name="apply_rotary_pos_emb"):
-    subgraph = sch.find_node(
-        lambda node: node.op == "call_function" and name in node.target.__name__
-    )
+def replace_rotary_pos_emb(sch, config):
+    def rotary_pattern(query_states, key_states, value_states):
+        kv_seq_len = key_states.size()[-2]
+        cos, sin = call_module("rotary_emb", value_states, seq_len=kv_seq_len)
+        return call_function(
+            "apply_rotary_pos_emb", query_states, key_states, cos, sin, None
+        )
 
-    class JitApplyRotary(nn.Module):
+    subgraphs = sch.find(rotary_pattern)
+    assert len(subgraphs) > 0
+
+    torch.ops.load_library("deepspeed/build/libds.so")
+
+    class DSApplyRotary(nn.Module):
         def __init__(self):
             super().__init__()
-            # self.apply_rotary_emb = torch.jit.script(apply_rotary_pos_emb)
-            self.apply_rotary_emb = torch.compile(apply_rotary_pos_emb)
+            self.head_num = config.num_attention_heads // sch.world_size
+            self.max_position_embeddings = config.max_position_embeddings
 
-        def forward(self, query_states, key_states, cos, sin, position_ids):
-            return self.apply_rotary_emb(
-                query_states, key_states, cos, sin, position_ids
+        def forward(self, key_states, value_states, query_states, position_ids):
+            # getitem_9, getitem_10, getitem_8
+            bsz, q_len, hs = query_states.size()
+            query_states, key_states = torch.ops.ds.apply_rotary_pos_emb(
+                query_states,
+                key_states,
+                hs,  # rotary_dim
+                0,  # offset
+                self.head_num,  # num_heads
+                True,  # rotate_half
+                self.max_position_embeddings,  # max_token_length
             )
+            query_states = query_states.view(bsz, q_len, self.head_num, -1).transpose(
+                1, 2
+            )
+            key_states = key_states.view(bsz, q_len, self.head_num, -1).transpose(1, 2)
+            return query_states, key_states
 
-    assert len(subgraph) == 1
-    sch.replace(JitApplyRotary(), target_ops=[subgraph])
+    sch.replace(DSApplyRotary(), target_ops=subgraphs)
 
 
 def schedule_llama(mod, config):
@@ -209,7 +240,6 @@ def schedule_llama(mod, config):
         fuse_qkv(sch[f"layers.{i}.self_attn"], config)
         fix_reshape(sch[f"layers.{i}.self_attn"])
         replace_sdp(sch[f"layers.{i}.self_attn"], config)
-        replace_rotary_pos_emb(sch[f"layers.{i}.self_attn"])
-        print(sch[f"layers.{i}.self_attn"].mod)
+        replace_rotary_pos_emb(sch[f"layers.{i}.self_attn"], config)
         replace_silu(sch[f"layers.{i}.mlp"])
     return sch
