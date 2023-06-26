@@ -78,9 +78,9 @@ def fuse_qkv(sch, config):
         config.num_attention_heads,
         sch.world_size,
         bias=False,
-        reshape=False,
+        reshape=True,
     )
-    fused_qkv = torch.compile(fused_qkv, backend="inductor")
+    # fused_qkv = torch.compile(fused_qkv, backend="inductor")
     # out = fused_qkv(torch.randn(bs, seq_len, config.hidden_size).cuda())
     sch.replace(fused_qkv, subgraphs)
 
@@ -174,7 +174,7 @@ def replace_silu(sch, name="act_fn"):
     sch[name].replace(FTSiLU())
 
 
-def replace_rotary_pos_emb(sch, config):
+def replace_ds_rotary_pos_emb(sch, config):
     def rotary_pattern(query_states, key_states, value_states):
         kv_seq_len = key_states.size()[-2]
         cos, sin = call_module("rotary_emb", value_states, seq_len=kv_seq_len)
@@ -214,6 +214,26 @@ def replace_rotary_pos_emb(sch, config):
     sch.replace(DSApplyRotary(), target_ops=subgraphs)
 
 
+def replace_rotary_pos_emb(sch, name="apply_rotary_pos_emb"):
+    subgraph = sch.find_node(
+        lambda node: node.op == "call_function" and name in node.target.__name__
+    )
+
+    class JitApplyRotary(nn.Module):
+        def __init__(self):
+            super().__init__()
+            # self.apply_rotary_emb = torch.jit.script(apply_rotary_pos_emb)
+            self.apply_rotary_emb = torch.compile(apply_rotary_pos_emb)
+
+        def forward(self, query_states, key_states, cos, sin, position_ids):
+            return self.apply_rotary_emb(
+                query_states, key_states, cos, sin, position_ids
+            )
+
+    assert len(subgraph) == 1
+    sch.replace(JitApplyRotary(), target_ops=[subgraph])
+
+
 def schedule_llama(mod, config):
     sch = slapo.create_schedule(mod)
     # if sch.world_size > 1:
@@ -240,6 +260,7 @@ def schedule_llama(mod, config):
         fuse_qkv(sch[f"layers.{i}.self_attn"], config)
         fix_reshape(sch[f"layers.{i}.self_attn"])
         replace_sdp(sch[f"layers.{i}.self_attn"], config)
-        replace_rotary_pos_emb(sch[f"layers.{i}.self_attn"], config)
+        # replace_ds_rotary_pos_emb(sch[f"layers.{i}.self_attn"], config)
+        replace_rotary_pos_emb(sch[f"layers.{i}.self_attn"])
         replace_silu(sch[f"layers.{i}.mlp"])
     return sch
