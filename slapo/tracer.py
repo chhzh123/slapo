@@ -157,12 +157,15 @@ def trace_submodule(
     # generate top graph module
     named_children = dict(root.named_children())
     leaf_modules = kwargs.get("leaf_modules", [])
+    leaf_functions = kwargs.get("leaf_functions", [])
 
     recursive = kwargs.get("recursive", True)
 
     # Create a tracer with the original leaf modules. This is only used
     # to judge whether a submodule is really a leaf or not.
-    tracer_with_orig_leaf = tracer_class(leaf_modules=leaf_modules)
+    tracer_with_orig_leaf = tracer_class(
+        leaf_modules=leaf_modules, leaf_functions=leaf_functions
+    )
 
     leaf_modules = copy.deepcopy(leaf_modules)
     if not kwargs.get("flatten", False):
@@ -176,7 +179,7 @@ def trace_submodule(
                 ]
             else:
                 leaf_modules.append(key)
-    tracer = tracer_class(leaf_modules=leaf_modules)
+    tracer = tracer_class(leaf_modules=leaf_modules, leaf_functions=leaf_functions)
 
     if tracer.name == "huggingface":
         concrete_args, dummy_inputs = generate_hf_tracer_inputs(
@@ -428,7 +431,8 @@ def trace(model: nn.Module, **kwargs: dict[str, Any]):
 
             class TracerWrapper(HFTracer):
                 def __init__(self, **config: dict[str, Any]) -> None:
-                    super().__init__()
+                    self.leaf_functions = config.get("leaf_functions", [])
+                    super().__init__(autowrap_functions=tuple(self.leaf_functions))
                     self.name = "huggingface"
                     self.leaf_modules = config.get("leaf_modules", [])
 
@@ -619,7 +623,11 @@ def trace(model: nn.Module, **kwargs: dict[str, Any]):
 
             class TracerWrapper(fx.Tracer):
                 def __init__(self, **config: dict[str, Any]) -> None:
-                    super().__init__(param_shapes_constant=True)
+                    self.leaf_functions = config.get("leaf_functions", [])
+                    super().__init__(
+                        param_shapes_constant=True,
+                        autowrap_functions=tuple(self.leaf_functions),
+                    )
                     self.leaf_modules = config.get("leaf_modules", [])
                     self.name = "pytorch"
 
