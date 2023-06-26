@@ -287,6 +287,16 @@ class Schedule:
                 if not isinstance(arg, (tuple, fx.Node)):
                     if i >= len(target.args) or arg != target.args[i]:
                         return False
+                if (
+                    isinstance(arg, fx.Node)
+                    and arg.op != "placeholder"
+                    and i < len(target.args)
+                    and isinstance(target.args[i], fx.Node)
+                    and target.args[i].op != "placeholder"
+                    and len(subgraph) > 0
+                    and (parent_name, arg) not in subgraph
+                ):
+                    return False
             if not (
                 (curr.op == target.op and curr.target == target.target)  # exactly match
                 or (  # nn.Module and nn.functional are viewed as the same
@@ -300,6 +310,12 @@ class Schedule:
                     and target.op == "call_function"
                     and target.target.__name__ == "call_module"
                     and re.match(target.args[0], curr.target)
+                )
+                or (
+                    curr.op == "call_function"
+                    and target.op == "call_function"
+                    and target.target.__name__ == "call_function"
+                    and re.match(target.args[0], curr.target.__name__)
                 )
                 or (  # use pattern class for matching
                     curr.op == "call_module"
@@ -370,7 +386,9 @@ class Schedule:
                 # https://github.com/pytorch/pytorch/issues/53534
                 if "call_module" in pattern_fn.__globals__:
                     exec(
-                        "import torch.fx; torch.fx.wrap('call_module')",
+                        "import torch.fx;"
+                        "torch.fx.wrap('call_module');"
+                        "torch.fx.wrap('call_function')",
                         pattern_fn.__globals__,
                     )
                 pattern_mod = fx.symbolic_trace(pattern_fn)

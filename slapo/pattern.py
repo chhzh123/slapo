@@ -20,3 +20,7 @@ class ModulePattern(nn.Module):
 
 def call_module(mod_name, *args):
     raise NotImplementedError
+
+
+def call_function(mod_name, *args):
+    raise NotImplementedError
