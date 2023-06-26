@@ -41,7 +41,9 @@ def shard_word_embedding(sch, vocab_size, word_embed_name="embeddings.word_embed
     sch[word_embed_name].sync(mode="fwd_post", sync_op_or_fn=fwd_post_hook)
 
 
-def trace_attention(sch, config, input_names=["hidden_states"], leaf_modules=[]):
+def trace_attention(
+    sch, config, input_names=["hidden_states"], leaf_modules=[], leaf_functions=[]
+):
     sig = inspect.signature(sch.mod.forward)
     concrete_args = {
         p.name: p.default for p in sig.parameters.values() if p.name not in input_names
@@ -51,6 +53,7 @@ def trace_attention(sch, config, input_names=["hidden_states"], leaf_modules=[])
         flatten=True,
         tracer="huggingface",
         leaf_modules=leaf_modules,
+        leaf_functions=leaf_functions,
         concrete_args=concrete_args,
         config=config,
     )
