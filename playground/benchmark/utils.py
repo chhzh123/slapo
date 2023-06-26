@@ -73,20 +73,21 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100):
         for _ in range(15):
             mod(input_tensor)
 
-        latencies = []
         torch.cuda.synchronize()
         # https://discuss.pytorch.org/t/how-to-measure-time-in-pytorch/26964/10
-        torch.cuda.cudart().cudaProfilerStart()
-        with torch.no_grad():
-            for i in range(iters):
-                start_event.record()
-                torch.cuda.nvtx.range_push(f"perf_model_{i}")
-                mod(input_tensor)
-                torch.cuda.nvtx.range_pop()
-                end_event.record()
-                torch.cuda.synchronize()
-                latencies.append(start_event.elapsed_time(end_event))
-        torch.cuda.cudart().cudaProfilerStop()
+        # https://dev-discuss.pytorch.org/t/using-nsight-systems-to-profile-gpu-workload/59?u=ptrblck
+        # https://gist.github.com/mcarilli/376821aa1a7182dfcf59928a7cde3223
+        # torch.cuda.cudart().cudaProfilerStart()
+        start_event.record()
+        for i in range(iters):
+            # torch.cuda.nvtx.range_push(f"perf_model_{i}")
+            mod(input_tensor)
+            # torch.cuda.nvtx.range_pop()
+        end_event.record()
+        torch.cuda.synchronize()
+        # torch.cuda.cudart().cudaProfilerStop()
 
     if dist.get_rank() == 0:
-        print(f"# GPUs: {dist.get_world_size()} Time: {sum(latencies[5:]) / iters:.3f} ms")
+        print(
+            f"# GPUs: {dist.get_world_size()} Time: {start_event.elapsed_time(end_event) / iters:.3f} ms"
+        )

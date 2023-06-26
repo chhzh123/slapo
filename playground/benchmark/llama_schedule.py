@@ -80,7 +80,7 @@ def fuse_qkv(sch, config):
         bias=False,
         reshape=True,
     )
-    # fused_qkv = torch.compile(fused_qkv, backend="inductor")
+    fused_qkv = torch.compile(fused_qkv, backend="inductor")
     # out = fused_qkv(torch.randn(bs, seq_len, config.hidden_size).cuda())
     sch.replace(fused_qkv, subgraphs)
 
