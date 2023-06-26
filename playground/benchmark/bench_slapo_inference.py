@@ -43,7 +43,9 @@ if __name__ == "__main__":
         seq_len = args.max_seq_len
     sch = create_optimized_schedule(args.name, mod, config)
     mod, _ = slapo.build(sch, init_weights=mod._init_weights)
-    input_ids = torch.ones((bs, seq_len), dtype=torch.long, device="cuda")
+    input_ids = torch.ones(
+        (bs, seq_len), dtype=torch.long, device="cuda", requires_grad=False
+    )
     if dist.get_rank() == 0:
         print(mod)
     perf_model(mod, input_ids, use_cuda_graph=False)

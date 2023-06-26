@@ -43,37 +43,50 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100):
     if use_cuda_graph:
         s = torch.cuda.Stream()
         fake_inputs = torch.ones_like(
-            input_tensor, dtype=input_tensor.dtype, device="cuda"
+            input_tensor, dtype=input_tensor.dtype, device="cuda", requires_grad=False
         )
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
-            for _ in range(15):
-                mod(fake_inputs)
+            with torch.no_grad():
+                for _ in range(15):
+                    mod(fake_inputs)
         torch.cuda.current_stream().wait_stream(s)
 
         # capture
         g = torch.cuda.CUDAGraph()
         torch.cuda.synchronize()
-        with torch.cuda.graph(g):
-            mod(fake_inputs)
+        with torch.cuda.graph(g, stream=s):
+            with torch.no_grad():
+                mod(fake_inputs)
 
         input_tensor.copy_(fake_inputs)
         start_event.record()
-        for _ in range(iters):
+        # torch.cuda.cudart().cudaProfilerStart()
+        for i in range(iters):
+            # torch.cuda.nvtx.range_push(f"perf_model_{i}")
             g.replay()
+            # torch.cuda.nvtx.range_pop()
+        # torch.cuda.cudart().cudaProfilerStop()
         end_event.record()
         torch.cuda.synchronize()
     else:
-        for _ in range(10):
+        for _ in range(15):
             mod(input_tensor)
 
-        start_event.record()
-        for _ in range(iters):
-            mod(input_tensor)
-        end_event.record()
+        latencies = []
         torch.cuda.synchronize()
+        # https://discuss.pytorch.org/t/how-to-measure-time-in-pytorch/26964/10
+        torch.cuda.cudart().cudaProfilerStart()
+        with torch.no_grad():
+            for i in range(iters):
+                start_event.record()
+                torch.cuda.nvtx.range_push(f"perf_model_{i}")
+                mod(input_tensor)
+                torch.cuda.nvtx.range_pop()
+                end_event.record()
+                torch.cuda.synchronize()
+                latencies.append(start_event.elapsed_time(end_event))
+        torch.cuda.cudart().cudaProfilerStop()
 
     if dist.get_rank() == 0:
-        print(
-            f"# GPUs: {dist.get_world_size()} Time: {start_event.elapsed_time(end_event) / iters:.3f} ms"
-        )
+        print(f"# GPUs: {dist.get_world_size()} Time: {sum(latencies[5:]) / iters:.3f} ms")
