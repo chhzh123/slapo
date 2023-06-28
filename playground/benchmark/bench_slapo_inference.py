@@ -38,7 +38,7 @@ if __name__ == "__main__":
     dist.init_process_group("nccl", world_size=int(os.environ["WORLD_SIZE"]))
     torch.cuda.set_device(dist.get_rank())
 
-    mod, config, seq_len = get_model(args.name, meta=True)
+    mod, config, seq_len = get_model(args.name, meta=False if args.name == "bert" else True)
     if seq_len > args.max_seq_len:
         seq_len = args.max_seq_len
     sch = create_optimized_schedule(args.name, mod, config)
@@ -48,5 +48,5 @@ if __name__ == "__main__":
     )
     if dist.get_rank() == 0:
         print(mod)
-    perf_model(mod, input_ids, use_cuda_graph=False)
+    perf_model(mod, input_ids, use_cuda_graph=True if args.name == "bert" else False)
     del mod
