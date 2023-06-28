@@ -16,6 +16,7 @@ parser.add_argument("--local_rank", required=True, type=int, help="local_rank")
 parser.add_argument("--bs", default=1, type=int, help="batch size")
 parser.add_argument("--max_seq_len", default=1024, type=int, help="sequence length")
 parser.add_argument("--opt", default=True, type=bool, help="kernel optimization")
+parser.add_argument("--nsys", default=False, type=bool, help="Use nsys to profile")
 args = parser.parse_args()
 
 bs = args.bs
@@ -41,6 +42,8 @@ if __name__ == "__main__":
     input_ids = torch.ones((bs, seq_len), dtype=torch.long, device="cuda")
     if dist.get_rank() == 0:
         print(mod)
+        if args.nsys:
+            print("Use nsys to profile...")
     # Use cuda-graph may slow down performance
-    perf_model(mod, input_ids)
+    perf_model(mod, input_ids, use_cuda_graph=False, nsys=args.nsys)
     del mod
