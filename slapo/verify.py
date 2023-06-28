@@ -118,13 +118,13 @@ class Verify(ContextDecorator):
         if "dtype" in self.kwargs:
             logger.info("Using %s data type", self.kwargs["dtype"], ranks=0)
         # 1. Build the original model with random weights
-        named_params = self.original_sch.mod.named_parameters()
-        is_initialized = named_params.__next__()[1].device != torch.device("meta")
         original_mod, _ = build(
             self.original_sch,
-            init_weights=self.init_weights
-            if self.init_weights
-            else (not is_initialized),
+            init_weights=self.init_weights if self.init_weights
+            # Always init random weights for verification,
+            # and make sure the weights are the same for different devices.
+            # This is guaranteed by consolidation process.
+            else True,
         )
         #    make sure all the buffers are on the right device
         original_mod = original_mod.to(self.device)
