@@ -9,7 +9,7 @@ from torch import nn
 
 from .base import register_primitive, Primitive
 from ..initialization import init_empty_weights
-from ..op import LinearWithSeparateBias
+from ..op import LinearWithSyncNBias
 
 
 @register_primitive()
@@ -63,7 +63,7 @@ class FusePrimitive(Primitive):
 @register_primitive()
 class DecomposePrimitive(Primitive):
     """Decompose a module. Currently only support decomposing a linear layer.
-    Specifically, this primitive replaces a linear layer with LinearWithSeparateBias,
+    Specifically, this primitive replaces a linear layer with LinearWithSyncNBias,
     which computes the bias separately from the weight. This is useful when we want
     to fuse the bias addition into the following logic (e.g., activation function).
 
@@ -83,20 +83,18 @@ class DecomposePrimitive(Primitive):
             raise RuntimeError(
                 "Can only support decomposing a `nn.Linear` layer for now"
             )
-        if (
-            sch.mod.weight.shape[1] != sch.mod.in_features
-            or sch.mod.weight.shape[0] != sch.mod.out_features
-        ):
-            raise RuntimeError(".shard() should be applied after .decompose()")
+        if sch.mod.bias is None:
+            raise RuntimeError(
+                "Bias is None. Cannot decompose a linear layer without bias"
+            )
         # Replace the linear module
         with init_empty_weights(enable=(sch.mod.weight.device == torch.device("meta"))):
-            new_mod = LinearWithSeparateBias(
+            new_mod = LinearWithSyncNBias(
                 sch.mod.weight.shape[1],
                 sch.mod.weight.shape[0],
+                weight=sch.mod.weight,
+                bias=sch.mod.bias,
                 device=sch.mod.weight.device,
                 dtype=sch.mod.weight.dtype,
             )
-            # Use original value
-            new_mod.weight = sch.mod.weight
-            new_mod.bias = sch.mod.bias
-            sch.replace(new_mod)
+        sch.replace(new_mod)

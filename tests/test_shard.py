@@ -14,6 +14,7 @@ import pytest
 import torch
 import torch.distributed as dist
 from torch import nn
+from torch import fx
 from torch.autograd import Variable
 from torch.nn import functional as F
 
@@ -195,6 +196,50 @@ def test_linear(init_dist):
 
         torch.testing.assert_close(out, out_ref)
         verify_grads(model, path_and_grads)
+
+
+def test_linear_decomposition(init_dist=None):
+    dist.init_process_group(backend="nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear1 = torch.nn.Linear(20, 30)
+            self.linear2 = torch.nn.Linear(30, 40)
+            self.dropout = torch.nn.Dropout(0.1)
+            self.layernorm = torch.nn.LayerNorm(40)
+
+        def forward(self, data):
+            out = self.linear1(data)
+            out = self.linear2(out)
+            out = self.dropout(out)
+            out = self.layernorm(out)
+            return out
+
+    mod = Model()
+    sch = slapo.create_schedule(mod)
+
+    def pattern(bias, x):
+        return F.layer_norm(F.dropout(bias + x), 40)
+
+    with slapo.Verify(sch, [torch.randn((10, 20))], device=f"cuda:{local_rank}"):
+        # Correct primitive application order:
+        # 1. shard + sync
+        # 2. flattened tracing
+        # 3. fuse bias
+        # DON'T do decompose->trace->shard!
+        # FIXME: Need to handle (error out) this case correctly
+        sch["linear1"].shard("weight", axis=0)
+        sch["linear1"].shard("bias", axis=0)
+        sch["linear2"].shard("weight", axis=1)
+        sch["linear2"].sync(mode="fwd_post", sync_op_or_fn="all_reduce")
+        sch.trace(flatten=True)
+        assert isinstance(sch.mod, fx.GraphModule)
+        subgraph = sch.find(pattern)
+        assert len(subgraph) > 0
+        sch.fuse(subgraph, compiler="TorchScript", name="FusedLN")
 
 
 def test_conv1d(init_dist):

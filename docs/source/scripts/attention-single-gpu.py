@@ -316,7 +316,7 @@ proj_sch["dense"].decompose()
 print(proj_sch.mod)
 
 # %%
-# We can see the ``Linear`` module changed into ``LinearWithSeparateBias``, and other submodules
+# We can see the ``Linear`` module changed into ``LinearWithSyncNBias``, and other submodules
 # remain the same. Next, we need to `explicitly` call the ``.trace()`` primitive to trace the module
 # into a static subgraph. It gives us more control over the traced module. For example, we can
 # pass in the ``flatten`` flag to let the tracer gets into each submodule so that the bias add

@@ -120,7 +120,7 @@ print(sch.mod)
 # Another optimization we can do is to fuse the GELU activation with the first
 # linear layer. We can use ``.decompose()`` to decompose the linear layer into
 # a matrix multiplication and a bias addition. As shown in the output below,
-# the ``nn.Linear`` layer is replaced with the predefined ``LinearWithSeparateBias``
+# the ``nn.Linear`` layer is replaced with the predefined ``LinearWithSyncNBias``
 # module.
 
 sch["linear1"].decompose()

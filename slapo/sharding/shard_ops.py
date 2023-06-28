@@ -20,7 +20,7 @@ from .sync_ops import (
     scatter_forward_output,
 )
 from ..initialization import init_empty_weights
-from ..op import LinearWithSyncFunc
+from ..op import LinearWithSyncFunc, LinearWithSyncNBias
 from .reshard_ops import parse_reshard
 
 SHARD_METHODS = {}
@@ -455,6 +455,7 @@ class ShardLinear(ShardMethod):
     def postproc(sch, param_name, sharded_size, axis):
         if axis == 0:
             sch.mod.out_features = sharded_size
+            return
         # axis == 1
         sch.mod.in_features = sharded_size
 
@@ -497,25 +498,25 @@ class ShardLinear(ShardMethod):
         if issubclass(sch.mod.__class__, LinearWithSyncFunc):
             # If the module is already a LinearWithSyncFunc, which may be
             # LinearWithAct or LinearWithDropout, then we simply update its sync_fn.
-            sch.mod.sync_fn = sync_fn
+            # Notice we use SyncOpWrapper to wrap the collective
+            # operation, so it is sync_fn.fn that is actually called.
+            # FIXME: This path is not going to be executed.
+            sch.mod.sync_fn.fn = sync_fn
         else:
             # Replace nn.Linear with a custom linear module that allows us to insert
             # the sync op before the bias addition.
             with init_empty_weights(
                 enable=(sch.mod.weight.device == torch.device("meta"))
             ):
-                new_mod = LinearWithSyncFunc(
+                new_mod = LinearWithSyncNBias(
                     sch.mod.in_features,
                     sch.mod.out_features,
-                    sch.mod.bias is not None,
-                    sch.mod.weight.device,
-                    sch.mod.weight.dtype,
-                    sync_fn,
+                    weight=sch.mod.weight,
+                    bias=sch.mod.bias,
+                    device=sch.mod.weight.device,
+                    dtype=sch.mod.weight.dtype,
+                    sync_fn=sync_fn,
                 )
-            # Directly register the current parameters to the new module to maintain
-            # possible tied weights.
-            new_mod.register_parameter("weight", sch.mod.weight)
-            new_mod.register_parameter("bias", sch.mod.bias)
             sch.replace(new_mod)
 
 

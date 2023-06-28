@@ -57,20 +57,46 @@ class FusedQKV(nn.Module):
         return [q, k, v]
 
 
-class LinearWithSeparateBias(nn.Linear):
-    """Implementation modified from `nn.Linear`
-    Arguments are the same as the inputs of `nn.Linear`
-    """
+class SyncOpWrapper(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        if fn is None:
+            # Identity function.
+            self.fn = lambda x: x
+            self.traceable = True
+        else:
+            self.fn = fn
+            self.traceable = False
 
-    def forward(self, x: Tensor) -> Tensor:
-        x = F.linear(x, self.weight, None)
-        x = x + self.bias
-        return x
+    def forward(self, *args, **kwargs):
+        return self.fn(*args, **kwargs)
+
+    def extra_repr(self):
+        fn_name = "None"
+        if self.fn is not None:
+            if hasattr(self.fn, "__name__"):
+                # Simply get the function name.
+                fn_name = self.fn.__name__
+            elif isinstance(self.fn, partial):
+                # If the sync function is a partial function, extract the original
+                # function name and the partial arguments.
+                fixed_args = ", ".join([str(arg) for arg in self.fn.args])
+                fixed_args += (
+                    ", ".join([f"{k}={v}" for k, v in self.fn.keywords.items()])
+                    if self.fn.keywords
+                    else ""
+                )
+                fn_name = f"partial({self.fn.func.__name__}, {fixed_args})"
+            else:
+                fn_name = str(self.fn)
+        return f"sync_fn={fn_name}"
 
 
 class LinearWithSyncFunc(nn.Linear):
     """Derived from `nn.Linear` but with a sync function that will be invoked
-    before the bias addition.
+    before the bias addition. Notice that the bias is disabled in this module.
+    We need to call LinearWithSyncNBias to include the bias calculation.
+    The reason of doing this is to avoid collective op to be traced.
 
     Parameters
     ----------
@@ -78,9 +104,6 @@ class LinearWithSyncFunc(nn.Linear):
         Size of each input sample.
     out_features: int
         Size of each output sample.
-    bias: bool
-        This is to align the interface with `nn.Linear`. However, this module
-        requires bias to be True.
     device: torch.device
         The device of the module.
     dtype: torch.dtype
@@ -93,42 +116,51 @@ class LinearWithSyncFunc(nn.Linear):
         self,
         in_features,
         out_features,
-        bias=True,
+        weight,
         device=None,
         dtype=None,
         sync_fn=None,
     ):
-        super().__init__(in_features, out_features, bias, device, dtype)
-        self.traceable = False
-        self.sync_fn = sync_fn
+        super().__init__(
+            in_features, out_features, bias=False, device=device, dtype=dtype
+        )
+        self.weight = weight
+        # Untraceable module.
+        self.sync_fn = SyncOpWrapper(sync_fn)
 
     def forward(self, x):
         x = F.linear(x, self.weight, None)
-        if self.sync_fn is not None:
-            x = self.sync_fn(x)
-        if self.bias is not None:
-            x = x + self.bias
+        x = self.sync_fn(x)
         return x
 
-    def extra_repr(self):
-        sync_fn_name = "None"
-        if self.sync_fn is not None:
-            if hasattr(self.sync_fn, "__name__"):
-                # Simply get the function name.
-                sync_fn_name = self.sync_fn.__name__
-            elif isinstance(self.sync_fn, partial):
-                # If the sync function is a partial function, extract the original
-                # function name and the partial arguments.
-                fixed_args = ", ".join([str(arg) for arg in self.sync_fn.args])
-                fixed_args += (
-                    ", ".join([f"{k}={v}" for k, v in self.sync_fn.keywords.items()])
-                    if self.sync_fn.keywords
-                    else ""
-                )
-                sync_fn_name = f"partial({self.sync_fn.func.__name__}, {fixed_args})"
-            else:
-                sync_fn_name = str(self.sync_fn)
-        return f"{super().extra_repr()}, sync_fn={sync_fn_name}"
+
+class LinearWithSyncNBias(LinearWithSyncFunc):
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        weight,
+        bias,
+        device=None,
+        dtype=None,
+        sync_fn=None,
+    ):
+        super().__init__(
+            in_features,
+            out_features,
+            weight=weight,
+            device=device,
+            dtype=dtype,
+            sync_fn=sync_fn,
+        )
+        assert bias is not None, "bias must be provided"
+        self.bias = bias
+
+    def forward(self, x):
+        x = F.linear(x, self.weight, None)
+        x = self.sync_fn(x)
+        x = x + self.bias
+        return x
 
 
 class LinearWithAct(LinearWithSyncFunc):
