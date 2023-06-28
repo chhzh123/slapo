@@ -7,15 +7,13 @@ from slapo.model_schedule.base import (
     shard_mlp,
     trace_attention,
     replace_sdp,
-    fuse_qkv,
-    fuse_bias_gelu,
     fuse_ln_residual,
     shard_word_embedding,
 )
 from slapo.pattern import call_module
 
 
-def fuse_gemm_bias_gelu(sch, name="dense"):
+def fuse_gemm_gelu(sch, name="dense"):
     sch.trace(recursive=False, flatten=True, leaf_modules=["Linear"])
 
     subgraph = sch.find(lambda x: F.gelu(call_module(name, x)))
@@ -25,10 +23,11 @@ def fuse_gemm_bias_gelu(sch, name="dense"):
     class GEMMBiasGeLU(torch.nn.Module):
         def __init__(self, weight, bias):
             super().__init__()
+            device = f"cuda:{sch.rank}"
             self.weight = (
-                weight.transpose(1, 0).contiguous().to(torch.float16).to("cuda")
+                weight.transpose(1, 0).to(torch.float16).contiguous().to(device)
             )
-            self.bias = bias.contiguous().to(torch.float16).to("cuda")
+            self.bias = bias.to(torch.float16).contiguous().to(device)
 
         def forward(self, x):
             return torch.ops.bt.gemm_bias_gelu(x, self.weight, self.bias)
@@ -39,8 +38,9 @@ def fuse_gemm_bias_gelu(sch, name="dense"):
 def fuse_ln_residual(sch, names=["dense", "LayerNorm"], lib="FasterTransformer"):
     dense, ln = names
     assert not isinstance(sch.mod, fx.GraphModule)
-    sch[dense].decompose()
-    sch.trace(recursive=False, flatten=True)
+    if sch.world_size == 1:
+        sch[dense].decompose()
+    sch.trace(flatten=True)
 
     def pattern(x, bias, residual):
         x = F.dropout(x + bias)
@@ -50,8 +50,9 @@ def fuse_ln_residual(sch, names=["dense", "LayerNorm"], lib="FasterTransformer")
     class BiasLayerNorm(torch.nn.Module):
         def __init__(self, weight, bias, eps=1e-5):
             super().__init__()
-            self.weight = weight
-            self.bias = bias
+            device = f"cuda:{sch.rank}"
+            self.weight = weight.to(torch.float16).contiguous().to(device)
+            self.bias = bias.to(torch.float16).contiguous().to(device)
             self.eps = eps
             if lib == "FasterTransformer":
                 torch.ops.load_library(
@@ -81,12 +82,6 @@ def schedule_bert(mod, config):
     # if sch.world_size > 1:
     #     shard_word_embedding(sch, config.vocab_size, "embeddings.word_embeddings")
     for i in range(config.num_hidden_layers):
-        # May degrade performance for BERT
-        # fuse_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
-        # fuse_ln_residual(
-        #     sch[f"encoder.layer.{i}.attention.output"], names=["dense", "LayerNorm"]
-        # )
-        # fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
         if sch.world_size > 1:
             shard_attention(
                 sch[f"encoder.layer.{i}.attention"],
@@ -97,7 +92,7 @@ def schedule_bert(mod, config):
                 sch[f"encoder.layer.{i}"], names=["intermediate.dense", "output.dense"]
             )
         # Use this for ByteTransformer
-        fuse_gemm_bias_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
+        fuse_gemm_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
         trace_attention(
             sch[f"encoder.layer.{i}.attention"], config, leaf_modules=["BertSelfOutput"]
         )
