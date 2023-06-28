@@ -386,9 +386,12 @@ class Schedule:
                 # https://github.com/pytorch/pytorch/issues/53534
                 if "call_module" in pattern_fn.__globals__:
                     exec(
-                        "import torch.fx;"
-                        "torch.fx.wrap('call_module');"
-                        "torch.fx.wrap('call_function')",
+                        "import torch.fx;" "torch.fx.wrap('call_module');",
+                        pattern_fn.__globals__,
+                    )
+                if "call_function" in pattern_fn.__globals__:
+                    exec(
+                        "import torch.fx;" "torch.fx.wrap('call_function')",
                         pattern_fn.__globals__,
                     )
                 pattern_mod = fx.symbolic_trace(pattern_fn)
