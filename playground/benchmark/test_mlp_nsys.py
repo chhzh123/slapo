@@ -32,16 +32,39 @@ world_size = dist.get_world_size()
 class BertMLP(nn.Module):
     def __init__(self):
         super().__init__()
-        config.intermediate_size = config.intermediate_size // world_size
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
     def forward(self, inp):
         x = self.intermediate(inp)
         x = self.output(x, inp)
-        dist.all_reduce(x)
         return x
 
 mlp = BertMLP().eval()
-inp = torch.randn(1, 512, 1024, dtype=torch.float16, device="cuda")
-perf_model(mlp, inp, False, nsys=False)
+
+import slapo
+sch = slapo.create_schedule(mlp)
+sch["intermediate.dense"].shard("weight", axis=0)
+sch["intermediate.dense"].shard("bias", axis=0)
+sch["output.dense"].shard("weight", axis=1)
+sch["output.dense"].sync("fwd_post", "all_reduce")
+
+from bert_schedule import fuse_gemm_gelu, fuse_ln_residual
+fuse_gemm_gelu(sch["intermediate"], "dense")
+fuse_ln_residual(
+    sch["output"],
+    names=["dense", "LayerNorm"],
+)
+
+mlp, _ = slapo.build(sch, init_weights=False)
+
+inp = torch.randn(1, 512, 1024, dtype=torch.float16, device=f"cuda:{sch.rank}")
+# perf_model(mlp, inp, True, nsys=False)
+# mlp = torch.cuda.make_graphed_callables(mlp.to(torch.float16).cuda(sch.rank).eval(), (torch.randn((1, 512, 1024), device=f"cuda:{sch.rank}", dtype=torch.float16, requires_grad=False),), allow_unused_input=True)
+from torch._inductor.compile_fx import cudagraphify_impl
+inputs = [inp]
+mlp.to(torch.float16).cuda(sch.rank).eval()
+mlp(*inputs)
+mlp = cudagraphify_impl(model=lambda args: mlp(*args), inputs=inputs)
+new_inputs = [torch.randn(1, 512, 1024, dtype=torch.float16, device=f"cuda:{sch.rank}")]
+perf_model(mlp, new_inputs, False, nsys=True)

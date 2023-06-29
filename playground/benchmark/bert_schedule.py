@@ -77,6 +77,30 @@ def fuse_ln_residual(sch, names=["dense", "LayerNorm"], lib="FasterTransformer")
     )
 
 
+def cudagraphify(sch):
+    from torch._inductor.compile_fx import cudagraphify_impl
+
+    class CudaGraphModule(torch.nn.Module):
+        def __init__(self, mod, inputs):
+            super().__init__()
+            mod.to(torch.float16).cuda(sch.rank).eval()
+            # Need to preserve the inputs
+            self.inputs = inputs
+            self.mod = cudagraphify_impl(
+                model=lambda args: mod(*args), inputs=self.inputs
+            )
+
+        def forward(self, *args):
+            # should input a list
+            return self.mod([args[0]])
+
+    sch.replace(
+        CudaGraphModule(
+            sch.mod, [torch.randn((1, 512, 1024), device="cuda", dtype=torch.float16)]
+        )
+    )
+
+
 def schedule_bert(mod, config):
     sch = slapo.create_schedule(mod)
     # if sch.world_size > 1:
@@ -93,16 +117,15 @@ def schedule_bert(mod, config):
             )
         # Use this for ByteTransformer
         fuse_gemm_gelu(sch[f"encoder.layer.{i}.intermediate"], "dense")
-        trace_attention(
-            sch[f"encoder.layer.{i}.attention"], config, leaf_modules=["BertSelfOutput"]
-        )
+        trace_attention(sch[f"encoder.layer.{i}.attention.self"], config)
         # fuse_qkv(sch[f"encoder.layer.{i}.attention"], config=config)
-        replace_sdp(sch[f"encoder.layer.{i}.attention"], config)
+        replace_sdp(sch[f"encoder.layer.{i}.attention.self"], config)
         fuse_ln_residual(
             sch[f"encoder.layer.{i}.attention.output"],
             names=["dense", "LayerNorm"],
         )
         fuse_ln_residual(sch[f"encoder.layer.{i}.output"], names=["dense", "LayerNorm"])
+        cudagraphify(sch[f"encoder.layer.{i}"])
     # if sch.world_size == 1:
     #     mod = torch.compile(mod, backend="inductor")
     return sch
