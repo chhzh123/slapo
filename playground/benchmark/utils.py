@@ -35,9 +35,8 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100, nsys=False):
     """Measure the performance of a mod with certain resharding schemes"""
     # warmup
     torch.cuda.empty_cache()
-    mod.to(torch.float16)
-    mod.eval()
-    mod.to("cuda")
+    if isinstance(mod, torch.nn.Module):
+        mod.to(torch.float16).to("cuda").eval()
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     if use_cuda_graph:
@@ -64,6 +63,7 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100, nsys=False):
 
         input_tensor.copy_(fake_inputs)
         if not nsys:
+            torch.cuda.synchronize()
             start_event.record()
             for i in range(iters):
                 g.replay()
@@ -71,12 +71,13 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100, nsys=False):
             torch.cuda.synchronize()
         else:
             torch.cuda.cudart().cudaProfilerStart()
+            torch.cuda.synchronize()
             start_event.record()
             for i in range(iters):
                 torch.cuda.nvtx.range_push(f"perf_model_{i}")
                 g.replay()
-                torch.cuda.nvtx.range_pop()
                 torch.cuda.synchronize()
+                torch.cuda.nvtx.range_pop()
             end_event.record()
             torch.cuda.synchronize()
             torch.cuda.cudart().cudaProfilerStop()
@@ -89,13 +90,16 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100, nsys=False):
         # https://dev-discuss.pytorch.org/t/using-nsight-systems-to-profile-gpu-workload/59?u=ptrblck
         # https://gist.github.com/mcarilli/376821aa1a7182dfcf59928a7cde3223
         if not nsys:
+            torch.cuda.synchronize()
             start_event.record()
             for i in range(iters):
                 mod(input_tensor)
+                torch.cuda.synchronize()
             end_event.record()
             torch.cuda.synchronize()
         else:
             torch.cuda.cudart().cudaProfilerStart()
+            torch.cuda.synchronize()
             start_event.record()
             for i in range(iters):
                 torch.cuda.nvtx.range_push(f"perf_model_{i}")
