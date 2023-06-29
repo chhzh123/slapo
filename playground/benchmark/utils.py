@@ -41,23 +41,26 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100, nsys=False):
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     if use_cuda_graph:
-        s = torch.cuda.Stream()
+        if dist.get_rank() == 0:
+            print("Using cuda graph...")
         fake_inputs = torch.ones_like(
             input_tensor, dtype=input_tensor.dtype, device="cuda", requires_grad=False
         )
+        # warmup
+        torch.cuda.synchronize()
+        s = torch.cuda.Stream()
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
-            with torch.no_grad():
-                for _ in range(15):
-                    mod(fake_inputs)
+            for _ in range(15):
+                mod(fake_inputs)
+        s.synchronize()
         torch.cuda.current_stream().wait_stream(s)
+        torch.cuda.synchronize()
 
         # capture
         g = torch.cuda.CUDAGraph()
-        torch.cuda.synchronize()
         with torch.cuda.graph(g, stream=s):
-            with torch.no_grad():
-                mod(fake_inputs)
+            mod(fake_inputs)
 
         input_tensor.copy_(fake_inputs)
         if not nsys:
@@ -74,9 +77,9 @@ def perf_model(mod, input_tensor, use_cuda_graph=False, iters=100, nsys=False):
                 g.replay()
                 torch.cuda.nvtx.range_pop()
                 torch.cuda.synchronize()
-            torch.cuda.cudart().cudaProfilerStop()
             end_event.record()
             torch.cuda.synchronize()
+            torch.cuda.cudart().cudaProfilerStop()
     else:
         for _ in range(15):
             mod(input_tensor)
