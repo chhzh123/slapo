@@ -60,7 +60,7 @@ class FusedQKV(nn.Module):
         return query_states, key_states, value_states
 
 
-def fuse_qkv(sch, config):
+def fuse_qkv(sch, config, reshape=True):
     def qkv_pattern(hidden_states):
         new_states = call_module(r"[qkv]_proj", hidden_states)
         new_states.view(
@@ -78,7 +78,7 @@ def fuse_qkv(sch, config):
         config.num_attention_heads,
         sch.world_size,
         bias=False,
-        reshape=True,
+        reshape=reshape,
     )
     fused_qkv = torch.compile(fused_qkv, backend="inductor")
     # out = fused_qkv(torch.randn(bs, seq_len, config.hidden_size).cuda())
@@ -175,6 +175,7 @@ def replace_silu(sch, name="act_fn"):
 
 
 def replace_ds_rotary_pos_emb(sch, config):
+    # Need to set QKV reshape to False!
     def rotary_pattern(query_states, key_states, value_states):
         kv_seq_len = key_states.size()[-2]
         cos, sin = call_module("rotary_emb", value_states, seq_len=kv_seq_len)
