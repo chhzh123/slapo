@@ -6,7 +6,6 @@ from argparse import ArgumentParser
 
 import torch
 import torch.distributed as dist
-import slapo
 from utils import perf_model, get_model
 from bert_schedule import schedule_bert
 from llama_schedule import schedule_llama
@@ -46,8 +45,7 @@ if __name__ == "__main__":
     )
     if seq_len > args.max_seq_len:
         seq_len = args.max_seq_len
-    sch = create_optimized_schedule(args.name, mod, config)
-    mod, _ = slapo.build(sch, init_weights=mod._init_weights)
+    mod = create_optimized_schedule(args.name, mod, config)
     input_ids = torch.ones(
         (bs, seq_len), dtype=torch.long, device="cuda", requires_grad=False
     )

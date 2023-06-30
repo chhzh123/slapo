@@ -25,7 +25,7 @@ def get_model(name, meta=False):
     if name == "llama":
         config.pad_token_id = 0
     with slapo.init_empty_weights(enable=meta):
-        mod = AutoModel.from_pretrained(model_name, config=config)
+        mod = AutoModel.from_config(config=config)
     mod.eval()
     mod.to(torch.float16)
     return mod, config, seq_len

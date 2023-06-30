@@ -128,4 +128,6 @@ def schedule_bert(mod, config):
         cudagraphify(sch[f"encoder.layer.{i}"])
     # if sch.world_size == 1:
     #     mod = torch.compile(mod, backend="inductor")
-    return sch
+    mod, _ = slapo.build(sch, init_weights=mod._init_weights)
+    mod.to(torch.float16).cuda(sch.rank).eval()
+    return mod
