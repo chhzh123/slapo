@@ -234,6 +234,39 @@ def replace_rotary_pos_emb(sch, name="apply_rotary_pos_emb"):
     sch.replace(JitApplyRotary(), target_ops=[subgraph])
 
 
+def cudagraphify(sch):
+    from torch._inductor.compile_fx import cudagraphify_impl
+
+    class CudaGraphModule(torch.nn.Module):
+        def __init__(self, mod, inputs):
+            super().__init__()
+            mod.to(torch.float16).cuda(sch.rank).eval()
+            # Need to preserve the inputs
+            self.inputs = inputs
+            self.repr = str(mod)
+            self.mod = cudagraphify_impl(
+                model=lambda args: mod(*args), inputs=self.inputs
+            )
+
+        def forward(self, *args, **kwargs):
+            # should input a list
+            new_args = list(args + tuple(kwargs.values()))
+            return self.mod(new_args[:3])
+
+        def extra_repr(self) -> str:
+            return self.repr
+
+    device = f"cuda:{sch.rank}"
+    hidden_states = torch.randn((1, 1024, 4096), device=device, dtype=torch.float16)
+    attention_mask = torch.ones(
+        1, 1, 1024, 1024, dtype=torch.float16, requires_grad=False, device=device
+    )
+    position_ids = torch.ones(
+        1, 1024, dtype=torch.long, device=device, requires_grad=False
+    )
+    sch.replace(CudaGraphModule(sch.mod, [hidden_states, attention_mask, position_ids]))
+
+
 def schedule_llama(mod, config):
     sch = slapo.create_schedule(mod)
     # if sch.world_size > 1:
@@ -263,4 +296,10 @@ def schedule_llama(mod, config):
         # replace_ds_rotary_pos_emb(sch[f"layers.{i}.self_attn"], config)
         replace_rotary_pos_emb(sch[f"layers.{i}.self_attn"])
         replace_silu(sch[f"layers.{i}.mlp"])
-    return sch
+    mod, _ = slapo.build(sch, init_weights=mod._init_weights)
+    mod.to(torch.float16).cuda(sch.rank).eval()
+    for i in range(config.num_hidden_layers):
+        cudagraphify(sch[f"layers.{i}"])
+        if sch.rank == 0:
+            print("Done layer", i)
+    return mod
