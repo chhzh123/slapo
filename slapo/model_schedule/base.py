@@ -218,3 +218,42 @@ def fuse_ln_residual(sch, names=["dense", "LayerNorm"]):
     subgraph = sch.find(pattern)
     assert len(subgraph[0]) == 4
     sch.fuse(subgraph, compiler="TorchInductor", name="LNResidual")
+
+
+def generate_pipeline_stages(
+    sch,
+    pipeline_cuts,
+    prefix="",
+    input_names=["input_ids", "attention_mask", "token_type_ids"],
+):
+    sig = inspect.signature(sch.mod.forward)
+    concrete_args = {
+        p.name: p.default for p in sig.parameters.values() if p.name not in input_names
+    }
+    _prefix = f"{prefix}." if prefix else ""
+    sch.trace_until(
+        f"{_prefix}encoder", tracer="huggingface", concrete_args=concrete_args
+    )
+    for cut in pipeline_cuts:
+        sch[f"{_prefix}encoder.layer.{cut}"].cut_pipeline_stage()
+
+    return sch
+
+
+def uniform_checkpoint(sch, num_layers, path="encoder.layer.N", ckpt_ratio=1.0):
+    if ckpt_ratio == 0.0:
+        return 0
+
+    n_ckpt = int(num_layers * ckpt_ratio)
+    for idx in range(n_ckpt):
+        sch[path.replace("N", str(idx))].checkpoint()
+    return n_ckpt
+
+
+def broadcast_input(sch):
+    def broadcast(inputs):
+        for inp in inputs:
+            dist.broadcast(inp, src=0, group=sch.group)
+        return inputs
+
+    sch.sync(mode="fwd_pre", sync_op_or_fn=broadcast)
