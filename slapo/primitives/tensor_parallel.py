@@ -30,6 +30,11 @@ class ShardPrimitive(Primitive):
 
     @staticmethod
     def apply(sch, tensor_name: str, axis: int):
+        if isinstance(tensor_name, list):
+            for name in tensor_name:
+                ShardPrimitive.apply(sch, name, axis)
+            return
+
         def _shard(name, tensor):
             assert axis < len(tensor.shape)
             # TODO: Support arbitrary size sharding
