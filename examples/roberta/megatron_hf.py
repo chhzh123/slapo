@@ -174,6 +174,7 @@ def model_provider(pre_process=True, post_process=True):
             return output_tensor
 
     model = RoBERTaWithLMHead(add_pooling_layer=args.bert_binary_head)
+    print_rank_0(model)
     return model
 
 

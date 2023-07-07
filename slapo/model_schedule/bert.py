@@ -52,11 +52,11 @@ def _apply_schedule(
         logger.info("Use fp32 as default model dtype", ranks=0)
 
     group = sch_config.get("group", None)
-    sch = create_schedule(model, group=group)
+    orig_sch = create_schedule(model, group=group)
     logger.info(
         "Scheduling %s with TP=%d, config: %s",
         model_name,
-        sch.world_size,
+        orig_sch.world_size,
         sch_config,
         ranks=0,
     )
@@ -70,7 +70,7 @@ def _apply_schedule(
     if attn_op_name == "native_xformers":
         logger.info("Disabled Flash Attention", ranks=0)
 
-    sch = sch[prefix]
+    sch = orig_sch[prefix]
 
     # Shard parameters if MP group > 1.
     if sch.world_size > 1:
@@ -101,14 +101,15 @@ def _apply_schedule(
     for idx in range(model_config.num_hidden_layers):
         trace_attention(sch[f"encoder.layer.{idx}.attention.self"], model_config)
         replace_sdp(sch[f"encoder.layer.{idx}.attention.self"], model_config)
-        fuse_bias_gelu(sch[f"encoder.layer.{idx}.intermediate"], name="dense")
-        fuse_ln_residual(
-            sch[f"encoder.layer.{idx}.attention.output"],
-            names=["dense", "LayerNorm"],
-        )
-        fuse_ln_residual(
-            sch[f"encoder.layer.{idx}.output"], names=["dense", "LayerNorm"]
-        )
+        if not sch_config.get("disable_fusion", False):
+            fuse_bias_gelu(sch[f"encoder.layer.{idx}.intermediate"], name="dense")
+            fuse_ln_residual(
+                sch[f"encoder.layer.{idx}.attention.output"],
+                names=["dense", "LayerNorm"],
+            )
+            fuse_ln_residual(
+                sch[f"encoder.layer.{idx}.output"], names=["dense", "LayerNorm"]
+            )
 
     if sch.world_size > 1 and sch_config.get("bcast_input", False):
         # Broadcast input to all devices within the MP group.
@@ -131,4 +132,4 @@ def _apply_schedule(
         logger.info("Generate pipeline schedule", ranks=0)
         generate_pipeline_stages(sch, sch_config)
 
-    return sch
+    return orig_sch

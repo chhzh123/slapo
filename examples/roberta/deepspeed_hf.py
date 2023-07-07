@@ -94,6 +94,7 @@ def train(args):
             ckpt_ratio=args.checkpoint,
             bcast_input=True,
             group=group,
+            disable_fusion=True,
             pipeline_cuts=pipeline_cuts,
             delay_init=enable_pipeline,
         )
@@ -141,6 +142,7 @@ def train(args):
         )
         model = model.to(device)
     report_memory(msg="After building model")
+    logger.info(f"model: {model}", ranks=0)
 
     seq_length = args.seq_len
     input_ids = torch.ones(
