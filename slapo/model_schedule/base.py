@@ -170,39 +170,73 @@ def shard_mlp(sch, names=["c_fc", "c_proj"], backward=False):
         sch[l1].sync("bwd_post", sync_op_or_fn="all_reduce")
 
 
-def replace_sdp(sch, config):
-    def scaled_dot_product(query_layer, key_layer, value_layer):
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(
-            config.hidden_size // config.num_attention_heads
-        )
-        attention_probs = F.softmax(attention_scores, dim=-1)
-        attention_probs = F.dropout(attention_probs)
-        context_layer = torch.matmul(attention_probs, value_layer)
-        return context_layer
+def find_gpt_attention(sch):
+    subgraph = []
+    flag = False
+    for node in sch.mod.graph.nodes:
+        # Start capturing subgraph
+        if node.op == "call_method" and node.target == "to":
+            flag = True
+        if flag:
+            subgraph.append(("", node))
+        # Stop capturing subgraph
+        if (
+            node.op == "call_function"
+            and node.target == torch.matmul
+            and node.args[0].op == "call_module"
+        ):
+            flag = False
+    return [subgraph]
 
-    subgraphs = sch.find(scaled_dot_product)
-    assert len(subgraphs[0]) == 6
 
-    class EfficientAttention(torch.nn.Module):
-        # Be careful of the order of the arguments
-        def forward(self, key_layer, query_layer, value_layer):
-            return F.scaled_dot_product_attention(query_layer, key_layer, value_layer)
+def replace_sdp(sch, config, mask=False):
+    if not mask:
+
+        def scaled_dot_product(query_layer, key_layer, value_layer):
+            attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+            attention_scores = attention_scores / math.sqrt(
+                config.hidden_size // config.num_attention_heads
+            )
+            attention_probs = F.softmax(attention_scores, dim=-1)
+            attention_probs = F.dropout(attention_probs)
+            context_layer = torch.matmul(attention_probs, value_layer)
+            return context_layer
+
+        subgraphs = sch.find(scaled_dot_product)
+        assert len(subgraphs[0]) == 6
+
+        class EfficientAttention(torch.nn.Module):
+            # Be careful of the order of the arguments
+            def forward(self, key_layer, query_layer, value_layer):
+                return F.scaled_dot_product_attention(
+                    query_layer, key_layer, value_layer
+                )
+
+    else:
+        subgraphs = find_gpt_attention(sch)
+        assert len(subgraphs) > 0
+
+        class EfficientAttention(torch.nn.Module):
+            # TODO: Add attention mask
+            def forward(self, query_layer, key_layer, value_layer):
+                return F.scaled_dot_product_attention(
+                    query_layer, key_layer, value_layer
+                )
 
     sch.replace(EfficientAttention(), subgraphs)
 
 
-def fuse_bias_gelu(sch, name="dense"):
+def fuse_bias_gelu(sch, name="dense", act="act"):
     sch[name].decompose()
-    sch.trace(flatten=True)
+    sch.trace(flatten=True, leaf_modules=[act])
 
     def pattern(x, bias):
-        x = F.gelu(bias + x)
+        x = call_module(act, bias + x)
         return x
 
     subgraph = sch.find(pattern)
     assert len(subgraph[0]) == 2
-    sch.fuse(subgraph, compiler="TorchInductor", name="BiasGeLU")
+    sch.fuse(subgraph, compiler="TorchInductor", name="FusedGeLU")
 
 
 def fuse_ln_residual(sch, names=["dense", "LayerNorm"]):

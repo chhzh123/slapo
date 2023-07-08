@@ -60,16 +60,7 @@ def _apply_schedule(
         sch_config,
         ranks=0,
     )
-
-    # Tensor parallelism.
-    logger.info("Shard model parameters", ranks=0)
     prefix = sch_config.get("prefix", "")
-    # Replace self attention with flash attention, and shard QKV/output
-    # if MP group > 1.
-    attn_op_name = sch_config.get("attn_op_name", "cuda")
-    if attn_op_name == "native_xformers":
-        logger.info("Disabled Flash Attention", ranks=0)
-
     sch = orig_sch[prefix]
 
     # Shard parameters if MP group > 1.
@@ -97,12 +88,12 @@ def _apply_schedule(
             "Shard %d attention layers", model_config.num_hidden_layers, ranks=0
         )
 
-    # Replace flash attention.
+    # Replace efficient kernels.
     for idx in range(model_config.num_hidden_layers):
         trace_attention(sch[f"encoder.layer.{idx}.attention.self"], model_config)
         replace_sdp(sch[f"encoder.layer.{idx}.attention.self"], model_config)
         if not sch_config.get("disable_fusion", False):
-            fuse_bias_gelu(sch[f"encoder.layer.{idx}.intermediate"], name="dense")
+            fuse_bias_gelu(sch[f"encoder.layer.{idx}.intermediate"], name="dense", act="intermediate_act_fn")
             fuse_ln_residual(
                 sch[f"encoder.layer.{idx}.attention.output"],
                 names=["dense", "LayerNorm"],
