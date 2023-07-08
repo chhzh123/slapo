@@ -283,16 +283,20 @@ class Schedule:
                 # Already matched.
                 return False
             # Match non-Node arguments.
+            if target.op == "call_function" and target.target.__name__ == "call_module":
+                offset = 1
+            else:
+                offset = 0
             for i, arg in enumerate(curr.args):
                 if not isinstance(arg, (tuple, fx.Node)):
-                    if i >= len(target.args) or arg != target.args[i]:
+                    if i + offset >= len(target.args) or arg != target.args[i + offset]:
                         return False
                 if (
                     isinstance(arg, fx.Node)
                     and arg.op != "placeholder"
-                    and i < len(target.args)
-                    and isinstance(target.args[i], fx.Node)
-                    and target.args[i].op != "placeholder"
+                    and i + offset < len(target.args)
+                    and isinstance(target.args[i + offset], fx.Node)
+                    and target.args[i + offset].op != "placeholder"
                     and len(subgraph) > 0
                     and (parent_name, arg) not in subgraph
                 ):
