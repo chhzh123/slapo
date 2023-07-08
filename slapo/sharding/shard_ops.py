@@ -201,14 +201,17 @@ def _gen_sync_func_from_str(sch, mode, sync_op, **kwargs):
             raise ValueError(
                 f"Invalid sync_op_or_fn {sync_op} for mode {mode} in {sch.path}."
             )
-    elif mode == "bwd_post":
+    elif mode == "bwd_post" or mode == "bwd_post_kw":
         # We register this hook to forward pre hook, and
         # use an autograd function to do the sync in backward.
         # This is to avoid using backward hook which semantic is not clear.
         if sync_op == "all_reduce":
             _validate_sync(sch, mode, sync_op)
             sync_fn = partial(reduce_backward_grad, group=sch.group)
-            mode = "fwd_pre"
+            if mode == "bwd_post":
+                mode = "fwd_pre"
+            else:
+                mode = "fwd_pre_kw"
         else:
             raise ValueError(
                 f"Invalid sync_op_or_fn {sync_op} for mode {mode} " "in {sch.path}."
@@ -423,6 +426,13 @@ class ShardMethod:
                     _input = sync_fn(_input[0])
                     return _input
 
+            elif mode == "fwd_pre_kw":
+
+                def hook_fn(_module, args, kwargs):
+                    vals = args + tuple(kwargs.values())
+                    _input = sync_fn(vals[0])
+                    return (args, kwargs)
+
             else:
                 raise ValueError(
                     f"Unsupported combination of mode {mode} and "
@@ -434,6 +444,8 @@ class ShardMethod:
 
         if mode == "fwd_pre":
             sch.mod.register_forward_pre_hook(hook_fn)
+        elif mode == "fwd_pre_kw":
+            sch.mod.register_forward_pre_hook(hook_fn, with_kwargs=True)
         elif mode == "fwd_post":
             sch.mod.register_forward_hook(hook_fn)
         elif mode == "bwd_post":
