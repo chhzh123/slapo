@@ -165,6 +165,7 @@ def model_provider(pre_process=True, post_process=True):
             return output_tensor
 
     model = OPTWithLMHead()
+    print_rank_0(model)
     return model
 
 
@@ -261,7 +262,6 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
 
 
 if __name__ == "__main__":
-
     pretrain(
         train_valid_test_datasets_provider,
         model_provider,

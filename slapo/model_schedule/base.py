@@ -122,6 +122,7 @@ def shard_attention(
     names=["q_proj", "k_proj", "v_proj", "out_proj"],
     attrs=["num_heads", "all_head_size"],
     backward=False,
+    **kwargs,
 ):
     if len(names) == 4:
         q, k, v, out = names
@@ -133,7 +134,10 @@ def shard_attention(
             sch[k].shard("bias", axis=0)
             sch[v].shard("bias", axis=0)
         if backward:
-            sch.sync(mode="bwd_post", sync_op_or_fn="all_reduce")
+            if "use_kwargs" in kwargs:
+                sch.sync(mode="bwd_post_kw", sync_op_or_fn="all_reduce")
+            else:
+                sch.sync(mode="bwd_post", sync_op_or_fn="all_reduce")
     elif len(names) == 2:  # q,k,v have been fused
         qkv, out = names
         sch[qkv].shard("weight", axis=0)
@@ -189,9 +193,8 @@ def find_gpt_attention(sch):
     return [subgraph]
 
 
-def replace_sdp(sch, config, mask=False):
-    if not mask:
-
+def replace_sdp(sch, config, pattern=None, mask=False):
+    if pattern is None:
         def scaled_dot_product(query_layer, key_layer, value_layer):
             attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
             attention_scores = attention_scores / math.sqrt(
@@ -201,9 +204,10 @@ def replace_sdp(sch, config, mask=False):
             attention_probs = F.dropout(attention_probs)
             context_layer = torch.matmul(attention_probs, value_layer)
             return context_layer
-
-        subgraphs = sch.find(scaled_dot_product)
-        assert len(subgraphs[0]) == 6
+        pattern = scaled_dot_product
+    if not mask:
+        subgraphs = sch.find(pattern)
+        assert len(subgraphs) > 0
 
         class EfficientAttention(torch.nn.Module):
             # Be careful of the order of the arguments
@@ -224,11 +228,30 @@ def replace_sdp(sch, config, mask=False):
                 )
 
     sch.replace(EfficientAttention(), subgraphs)
+    print(sch.mod)
 
 
-def fuse_bias_gelu(sch, name="dense", act="act"):
+def fuse_bias_gelu(sch, name="dense", act="act", tracer="pytorch", **kwargs):
     sch[name].decompose()
-    sch.trace(flatten=True, leaf_modules=[act])
+    leaf_modules = kwargs.get("leaf_modules", [])
+    if tracer == "huggingface":
+        sig = inspect.signature(sch.mod.forward)
+        input_names = ["hidden_states"]
+        concrete_args = {
+            p.name: p.default
+            for p in sig.parameters.values()
+            if p.name not in input_names
+        }
+        sch.trace(
+            recursive=False,
+            flatten=True,
+            tracer="huggingface",
+            leaf_modules=[act] + leaf_modules,
+            concrete_args=concrete_args,
+            config=kwargs.get("config", None),
+        )
+    else:
+        sch.trace(flatten=True, leaf_modules=[act] + leaf_modules)
 
     def pattern(x, bias):
         x = call_module(act, bias + x)
