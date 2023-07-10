@@ -10,6 +10,7 @@ from torch import fx
 
 HOOK_TYPE_TO_ATTR = {
     "fwd_pre": "_forward_pre_hooks",
+    "fwd_pre_kw": "_forward_pre_hooks_with_kwargs",
     "fwd_post": "_forward_hooks",
     "bwd_post": "_backward_hooks",
 }
@@ -35,6 +36,9 @@ def get_hooks(mod):
     for hook in mod._forward_pre_hooks.values():
         hooks["fwd_pre"].append(hook)
 
+    for hook in mod._forward_pre_hooks_with_kwargs.values():
+        hooks["fwd_pre_kw"].append(hook)
+
     for hook in mod._backward_hooks.values():
         hooks["bwd_post"].append(hook)
 
@@ -58,7 +62,7 @@ def transfer_hooks(old_mod, new_mod, hook_types=None):
         The types of hooks to transfer. If None, transfer all hooks.
     """
     if hook_types is None:
-        hook_types = ["fwd_pre", "fwd_post", "bwd_post"]
+        hook_types = ["fwd_pre", "fwd_pre_kw", "fwd_post", "bwd_post"]
 
     for hook_attr in [HOOK_TYPE_TO_ATTR[hook_type] for hook_type in hook_types]:
         setattr(new_mod, hook_attr, getattr(old_mod, hook_attr))
@@ -106,7 +110,9 @@ def transfer_hooks_for_fusion(sch, subgraphs, new_mod):
                             f"Cannot transfer hooks from {node.target} to the "
                             f"new module since {node.target} has a fwd_post hook"
                         )
-                    transfer_hooks(old_mod, new_mod, ["fwd_pre", "bwd_post"])
+                    transfer_hooks(
+                        old_mod, new_mod, ["fwd_pre", "fwd_pre_kw", "bwd_post"]
+                    )
                 elif i == len(ops) - 1:  # the last node
                     if has_hook(old_mod, "fwd_pre") or has_hook(old_mod, "bwd_post"):
                         raise RuntimeError(
