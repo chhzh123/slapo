@@ -240,6 +240,48 @@ def init_target_engine(sch, target, **kwargs):
     )
 
 
+def cudagraphify(sch, **kwargs):
+    from torch._inductor.compile_fx import cudagraphify_impl
+
+    if "dtype" not in kwargs:
+        dtype = torch.float32
+    else:
+        dtype = kwargs["dtype"]
+
+    class CudaGraphModule(torch.nn.Module):
+        def __init__(self, mod, inputs):
+            super().__init__()
+            # Need to preserve the input buffers which are needed when replaying
+            self.inputs = inputs
+            mod = mod.to(sch.rank).to(dtype=dtype)
+            self.repr = str(mod)
+            self.num_args = len(inputs)
+            # test output
+            output = mod(*inputs)
+            if isinstance(output, (tuple, list)):
+                self.is_tuple = True
+            else:
+                self.is_tuple = False
+            self.mod = cudagraphify_impl(
+                model=lambda args: mod(*args), inputs=self.inputs
+            )
+
+        def forward(self, *args, **kwargs):
+            # should input a list
+            new_args = list(args + tuple(kwargs.values()))
+            output = self.mod(list(new_args[: self.num_args]))
+            if self.is_tuple:
+                return output
+            else:
+                return output[0]
+
+        def extra_repr(self) -> str:
+            return self.repr
+
+    for subsch, example_inputs in sch.metadata.primitives["cudagraphify"]:
+        subsch.replace(CudaGraphModule(subsch.mod, example_inputs))
+
+
 def build(
     sch: Schedule,
     target=None,
@@ -270,6 +312,10 @@ def build(
             # https://github.com/huggingface/transformers/blob/v4.28.1/src/transformers/modeling_utils.py#L1274-L1277
             sch.mod.tie_weights()
 
+    # cudagraphify after consolidation
+    if sch.metadata.primitives["cudagraphify"]:
+        cudagraphify(sch, **kwargs)
+
     if sch.metadata.primitives["cut_pipeline_stage"] and target is not None:
         # Generate pipeline modules for a particular target.
         model = build_pipeline_model(
@@ -279,5 +325,8 @@ def build(
         )
     else:
         model = sch.mod
+
+    if "dtype" in kwargs:
+        model = model.to(dtype=kwargs["dtype"])
 
     return init_target_engine(model, target, **kwargs)
