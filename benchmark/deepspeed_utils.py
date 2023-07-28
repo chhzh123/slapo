@@ -68,8 +68,8 @@ def run_deepspeed(exp, args):
         cmd += f" --checkpoint {exp.grad_ckpt}"
     if "slapo" not in args.impl:
         cmd += " --disable_schedule"
-    # if exp.fp16:
-    #     cmd += " --fp16"
+    if exp.fp16:
+        cmd += " --fp16"
 
     if exp.kwargs is not None:
         if "env" in exp.kwargs and exp.kwargs["env"]:
