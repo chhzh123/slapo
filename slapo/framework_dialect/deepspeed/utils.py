@@ -25,7 +25,7 @@ class DeepSpeedLogParser:
             print("Out of GPU memory, try a smaller batch size")
             return 0, 0, 0, 1
 
-        samples_per_sec = query("SamplesPerSec", last_only=False)
+        samples_per_sec = query("RunningAvgSamplesPerSec", last_only=False)
         if not samples_per_sec:
             print(f'Failed. Check "{log_filename}" to find error')
             return 0, 0, 0, 2
