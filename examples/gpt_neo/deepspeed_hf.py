@@ -77,9 +77,6 @@ def train(args):
             num_mp = args.tmp
         else:
             logger.info("Pipeline disabled", ranks=0)
-            num_pp = 1
-            num_mp = args.tmp
-
         topology, group = create_dist_group_for_pipeline(num_pp, num_mp)
 
         # FIXME: Pytorch _coalescing_manager requires all the ranks to join
@@ -134,6 +131,7 @@ def train(args):
             group=group,
             pipeline_cuts=pipeline_cuts,
             delay_init=enable_pipeline,
+            disable_fusion=True,
             sequence_parallel=args.sequence_parallel,
             checkpoint_method=args.checkpoint_method,
         )
@@ -184,7 +182,7 @@ def train(args):
             batch_size = micro_batch_size * args.world_size
 
         # if the TP == 1 use zero 3, otherwise use stage-1 optimizer
-        zero_opt_stage = 3# if args.tmp == 1 else 1
+        zero_opt_stage = 3  # if args.tmp == 1 else 1
         logger.info(f"BS={batch_size}, MBS={micro_batch_size}", ranks=0)
         ds_config_dict = get_ds_config(
             batch_size,
@@ -196,7 +194,7 @@ def train(args):
         )
         model, _ = slapo.build(
             sch,
-            topology=None,
+            topology=topology,
             target="deepspeed",
             config=ds_config_dict,
             init_weights=model._init_weights,
@@ -240,7 +238,7 @@ def train(args):
 
     train_loader, _ = get_dataloader(
         args.model_name,
-        "wikitext-103-v1",
+        "wikitext-2-v1",
         micro_batch_size,
         enable_pipeline,
         collate_fn=collate_fn,
