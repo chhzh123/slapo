@@ -19,7 +19,7 @@ from .base import (
     trace_attention,
     generate_pipeline_stages,
 )
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, LlamaRMSNorm
 
 
 def shard_mlp(sch, names):
@@ -60,6 +60,21 @@ def replace_sdp(sch, config):
     subgraphs = sch.find(pattern)
     assert len(subgraphs) > 0
     sch.replace(EfficientAttention(), subgraphs)
+
+
+def replace_layernorm(sch, config):
+    class JITRMSNorm(nn.Module):
+        def __init__(self, hidden_size, eps=1e-6):
+            """
+            LlamaRMSNorm is equivalent to T5LayerNorm
+            """
+            super().__init__()
+            self.ln = torch.jit.script(LlamaRMSNorm(hidden_size, eps).cuda())
+
+        def forward(self, hidden_states):
+            return self.ln(hidden_states)
+
+    sch.replace(JITRMSNorm(config.hidden_size))
 
 
 def replace_rotary_pos_emb(sch, name="apply_rotary_pos_emb"):
@@ -146,7 +161,14 @@ def _apply_schedule(
         )
 
     # Replace efficient kernels.
+    if sch_config.get("disable_fusion", False):
+        replace_layernorm(sch["norm"], model_config)
     for idx in range(model_config.num_hidden_layers):
+        if sch_config.get("disable_fusion", False):
+            replace_layernorm(sch[f"layers.{idx}.input_layernorm"], model_config)
+            replace_layernorm(
+                sch[f"layers.{idx}.post_attention_layernorm"], model_config
+            )
         trace_attention(
             sch[f"layers.{idx}.self_attn"],
             model_config,
