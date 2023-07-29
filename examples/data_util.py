@@ -42,6 +42,10 @@ def get_dataloader(
             tokenizer.model_max_length = 1024
     elif "gpt" in model_name:
         tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neo-1.3B")
+    elif "llama" in model_name:
+        from transformers import LlamaTokenizer
+
+        tokenizer = LlamaTokenizer.from_pretrained(model_name)
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 

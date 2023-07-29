@@ -7,6 +7,7 @@ from slapo.framework_dialect import get_dialect_cls
 MODEL_KEY = [
     "bert",
     "gpt",
+    "llama",
     "gpt2",
     "albert",
     "t5",
