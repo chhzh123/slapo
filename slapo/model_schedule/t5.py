@@ -3,6 +3,10 @@
 """HuggingFace T5 with model schedule."""
 # pylint: disable=unused-argument, import-error
 
+import torch
+from torch import nn
+from torch.nn import functional as F
+
 from ..schedule import create_schedule
 from ..logger import get_logger
 from .registry import register_schedule
@@ -13,9 +17,6 @@ from .base import (
     broadcast_input,
     uniform_checkpoint,
     trace_attention,
-    replace_sdp,
-    fuse_bias_gelu,
-    fuse_ln_residual,
     generate_pipeline_stages,
 )
 
@@ -71,36 +72,23 @@ def _apply_schedule(
         )
         for idx in range(model_config.num_layers):
             # Encoder
-            shard_attention(
-                sch[f"encoder.block.{idx}.layer.0.SelfAttention"],
-                names=["q", "k", "v", "o"],
-                # Split along the num_heads dimension
-                attrs=["n_heads", "inner_dim"],
-                backward=True,
+            optimize_attention(
+                sch[f"encoder.block.{idx}.layer.0.SelfAttention"], model_config
             )
-            fix_position_bias_shape(sch[f"encoder.block.{idx}.layer.0.SelfAttention"])
             shard_mlp(
                 sch[f"encoder.block.{idx}.layer.1.DenseReluDense"],
                 names=["wi", "wo"],
                 backward=True,
             )
             # Decoder
-            shard_attention(
-                sch[f"decoder.block.{idx}.layer.0.SelfAttention"],
-                names=["q", "k", "v", "o"],
-                # Split along the num_heads dimension
-                attrs=["n_heads", "inner_dim"],
-                backward=True,
+            optimize_attention(
+                sch[f"decoder.block.{idx}.layer.0.SelfAttention"], model_config
             )
-            fix_position_bias_shape(sch[f"decoder.block.{idx}.layer.0.SelfAttention"])
-            shard_attention(
+            optimize_attention(
                 sch[f"decoder.block.{idx}.layer.1.EncDecAttention"],
-                names=["q", "k", "v", "o"],
-                # Split along the num_heads dimension
-                attrs=["n_heads", "inner_dim"],
-                backward=True,
+                model_config,
+                has_key_value=True,
             )
-            fix_position_bias_shape(sch[f"decoder.block.{idx}.layer.1.EncDecAttention"])
             shard_mlp(
                 sch[f"decoder.block.{idx}.layer.2.DenseReluDense"],
                 names=["wi", "wo"],
@@ -128,6 +116,55 @@ def _apply_schedule(
         generate_pipeline_stages(sch, sch_config)
 
     return orig_sch
+
+
+def optimize_attention(sch, model_config, has_key_value=False):
+    shard_attention(
+        sch,
+        names=["q", "k", "v", "o"],
+        # Split along the num_heads dimension
+        attrs=["n_heads", "inner_dim"],
+        backward=True,
+    )
+    fix_position_bias_shape(sch)
+    trace_attention(
+        sch,
+        model_config,
+        input_names=["hidden_states", "mask"]
+        + (["key_value_states"] if has_key_value else []),
+    )
+    replace_sdp(sch, model_config)
+
+
+def replace_sdp(sch, config):
+    # Replace efficient kernels
+    def pattern(query_states, key_states, position_bias, value_states):
+        scores = torch.matmul(query_states, key_states.transpose(3, 2))
+        scores += position_bias
+        attn_weights = nn.functional.softmax(scores.float(), dim=-1).type_as(
+            scores
+        )  # (batch_size, n_heads, seq_length, key_length)
+        attn_weights = nn.functional.dropout(
+            attn_weights, p=config.dropout_rate, training=True
+        )  # (batch_size, n_heads, seq_length, key_length)
+        attn_output = torch.matmul(attn_weights, value_states)
+        return attn_output
+
+    class EfficientAttention(torch.nn.Module):
+        # Be careful of the order of the arguments
+        # https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+        def forward(self, key_layer, query_layer, attention_mask, value_layer):
+            return F.scaled_dot_product_attention(
+                query_layer,
+                key_layer,
+                value_layer,
+                attn_mask=attention_mask,
+                dropout_p=config.dropout_rate,
+            )
+
+    subgraphs = sch.find(pattern)
+    assert len(subgraphs) > 0
+    sch.replace(EfficientAttention(), subgraphs)
 
 
 def fix_position_bias_shape(sch):

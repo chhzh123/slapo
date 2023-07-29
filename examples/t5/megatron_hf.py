@@ -224,6 +224,7 @@ def model_provider(
             return output_tensor
 
     model = T5WithLMHead()
+    print_rank_0(model)
     return model
 
 
