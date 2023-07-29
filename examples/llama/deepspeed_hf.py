@@ -8,7 +8,7 @@ import deepspeed
 import torch
 import torch.distributed as dist
 from deepspeed.utils import RepeatingLoader
-from transformers import AutoConfig, LlamaModel
+from transformers import AutoConfig, LlamaForCausalLM
 
 import slapo
 from slapo import set_random_seed
@@ -100,7 +100,7 @@ def train(args):
 
     report_memory(msg="Before creating model")
     with slapo.init_empty_weights(enable=enable_pipeline):
-        model = LlamaModel(config)
+        model = LlamaForCausalLM(config)
     report_memory(msg="After creating model")
 
     # Evenly partition layers for pipelining.
@@ -120,7 +120,7 @@ def train(args):
             model,
             schedule_key="llama",
             model_config=config,
-            prefix="",
+            prefix="model",
             attn_op_name=args.attn_op_name,
             ckpt_ratio=args.checkpoint,
             bcast_input=True,

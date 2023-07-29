@@ -141,10 +141,9 @@ def _apply_schedule(
     # Insert activation checkpoints.
     ckpt_ratio = sch_config.get("ckpt_ratio", 0.0)
     if ckpt_ratio > 0.0:
-        prefix = sch_config.get("prefix", "")
         logger.info("Checkpoint ratio: %.2f", ckpt_ratio, ranks=0)
         n_ckpt = uniform_checkpoint(
-            sch, model_config.num_hidden_layers, ckpt_ratio=ckpt_ratio
+            sch, model_config.num_hidden_layers, path="layers.N", ckpt_ratio=ckpt_ratio
         )
         logger.info("Checkpointed %d layers", n_ckpt, ranks=0)
 
@@ -153,9 +152,15 @@ def _apply_schedule(
         annotate_layernorm_and_bias(sch)
 
     # Pipeline parallelism.
-    if sch_config.get("pipeline_cuts", None):
+    pipeline_cuts = sch_config.get("pipeline_cuts", None)
+    if pipeline_cuts:
         logger.info("Generate pipeline schedule", ranks=0)
-        generate_pipeline_stages(sch, sch_config)
+        generate_pipeline_stages(
+            sch,
+            pipeline_cuts,
+            prefix="",
+            input_names=["hidden_states", "attention_mask", "position_ids"],
+        )
 
     return orig_sch
 

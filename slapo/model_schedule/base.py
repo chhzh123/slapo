@@ -195,6 +195,7 @@ def find_gpt_attention(sch):
 
 def replace_sdp(sch, config, pattern=None, mask=False):
     if pattern is None:
+
         def scaled_dot_product(query_layer, key_layer, value_layer):
             attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
             attention_scores = attention_scores / math.sqrt(
@@ -204,6 +205,7 @@ def replace_sdp(sch, config, pattern=None, mask=False):
             attention_probs = F.dropout(attention_probs)
             context_layer = torch.matmul(attention_probs, value_layer)
             return context_layer
+
         pattern = scaled_dot_product
     if not mask:
         subgraphs = sch.find(pattern)
@@ -287,12 +289,13 @@ def generate_pipeline_stages(
     concrete_args = {
         p.name: p.default for p in sig.parameters.values() if p.name not in input_names
     }
-    _prefix = f"{prefix}." if prefix else ""
     sch.trace_until(
-        f"{_prefix}encoder", tracer="huggingface", concrete_args=concrete_args
+        f"{'.'.join(prefix.split('.')[:-1])}",
+        tracer="huggingface",
+        concrete_args=concrete_args,
     )
     for cut in pipeline_cuts:
-        sch[f"{_prefix}encoder.layer.{cut}"].cut_pipeline_stage()
+        sch[f"{prefix}.{cut}"].cut_pipeline_stage()
 
     return sch
 
