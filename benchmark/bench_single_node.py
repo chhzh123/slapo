@@ -57,6 +57,10 @@ class Exp:
                 model_conf.num_hidden_layers = 24
                 model_conf.hidden_size = 2048
                 model_conf.max_position_embeddings = 1024
+            elif self.model == "EleutherAI/gpt-neo-2.7B":
+                model_conf = AutoConfig.from_pretrained(self.model)
+                model_conf.num_heads = 24
+                model_conf.hidden_size = 2640
             else:
                 model_conf = AutoConfig.from_pretrained(self.model)
         except:
@@ -71,10 +75,10 @@ class Exp:
         get = lambda *keys: max(
             [getattr(model_conf, k) if hasattr(model_conf, k) else 0 for k in keys]
         )
-        self.num_layers = get("num_hidden_layers", "n_layer")
+        self.num_layers = get("num_hidden_layers", "n_layer", "num_layers")
         self.hidden_size = get("hidden_size", "n_embd", "d_model")
         self.vocab_size = get("vocab_size")
-        self.num_heads = get("num_attention_heads", "n_head")
+        self.num_heads = get("num_attention_heads", "n_head", "num_heads")
         if self.seq_len_dec == 0:
             # Encoder or decoder only models.
             n, h, s, v = (

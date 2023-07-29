@@ -34,6 +34,9 @@ def get_model(
     delay_init=True,
 ):
     config = AutoConfig.from_pretrained(model_name)
+    if model_name == "EleutherAI/gpt-neo-2.7B":
+        config.num_heads = 24
+        config.hidden_size = 2640
     if padded_vocab_size is not None:
         config.vocab_size = padded_vocab_size
     config.use_cache = False
@@ -198,6 +201,7 @@ def model_provider(pre_process=True, post_process=True):
             return output_tensor
 
     model = GPTWithLMHead()
+    print_rank_0(model)
     return model
 
 

@@ -98,6 +98,9 @@ def train(args):
     config.use_cache = False
     config.gradient_checkpointing = use_default_ckpt
     config = reconfig_model(args, config)
+    if args.model_name == "EleutherAI/gpt-neo-2.7B":
+        config.num_heads = 24
+        config.hidden_size = 2640
     logger.info(config, ranks=[0])
 
     report_memory(msg="Before creating model")
