@@ -139,6 +139,7 @@ def train(args):
         )
         model = model.to(device)
     report_memory(msg="After building model")
+    logger.info(model, ranks=0)
 
     # Generate fake data. We make sure the number of batches is sufficient
     # to cover a global train batch size.
@@ -239,6 +240,16 @@ if __name__ == "__main__":
         type=int,
         default=512,
         help="Decoder sequence length",
+    )
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="fp16 is enabled. fp16 is enabled by default",
+    )
+    parser.add_argument(
+        "--bf16",
+        action="store_true",
+        help="bf16 is enabled",
     )
     parser.add_argument(
         "--disable_pipeline",

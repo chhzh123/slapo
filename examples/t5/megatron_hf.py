@@ -132,6 +132,7 @@ def model_provider(
     pre_process=True, post_process=True, add_encoder=True, add_decoder=True
 ):
     """Build the model."""
+    # https://github.com/NVIDIA/Megatron-LM/issues/128
 
     args = get_args()
     model_name = os.environ.get("MODEL_NAME", None)

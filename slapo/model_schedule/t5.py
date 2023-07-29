@@ -70,31 +70,33 @@ def _apply_schedule(
             model_config.vocab_size,
             word_embed_name="shared",
         )
-        for idx in range(model_config.num_layers):
-            # Encoder
-            optimize_attention(
-                sch[f"encoder.block.{idx}.layer.0.SelfAttention"], model_config
-            )
+    for idx in range(model_config.num_layers):
+        # Encoder
+        optimize_attention(
+            sch[f"encoder.block.{idx}.layer.0.SelfAttention"], model_config
+        )
+        if sch.world_size > 1:
             shard_mlp(
                 sch[f"encoder.block.{idx}.layer.1.DenseReluDense"],
                 names=["wi", "wo"],
                 backward=True,
             )
-            # Decoder
-            optimize_attention(
-                sch[f"decoder.block.{idx}.layer.0.SelfAttention"], model_config
-            )
-            optimize_attention(
-                sch[f"decoder.block.{idx}.layer.1.EncDecAttention"],
-                model_config,
-                has_key_value=True,
-            )
+        # Decoder
+        optimize_attention(
+            sch[f"decoder.block.{idx}.layer.0.SelfAttention"], model_config
+        )
+        optimize_attention(
+            sch[f"decoder.block.{idx}.layer.1.EncDecAttention"],
+            model_config,
+            has_key_value=True,
+        )
+        if sch.world_size > 1:
             shard_mlp(
                 sch[f"decoder.block.{idx}.layer.2.DenseReluDense"],
                 names=["wi", "wo"],
                 backward=True,
             )
-        logger.info("Shard %d attention layers", model_config.num_layers, ranks=0)
+    logger.info("Shard %d attention layers", model_config.num_layers, ranks=0)
 
     if sch.world_size > 1 and sch_config.get("bcast_input", False):
         # Broadcast input to all devices within the MP group.
@@ -119,13 +121,14 @@ def _apply_schedule(
 
 
 def optimize_attention(sch, model_config, has_key_value=False):
-    shard_attention(
-        sch,
-        names=["q", "k", "v", "o"],
-        # Split along the num_heads dimension
-        attrs=["n_heads", "inner_dim"],
-        backward=True,
-    )
+    if sch.world_size > 1:
+        shard_attention(
+            sch,
+            names=["q", "k", "v", "o"],
+            # Split along the num_heads dimension
+            attrs=["n_heads", "inner_dim"],
+            backward=True,
+        )
     fix_position_bias_shape(sch)
     trace_attention(
         sch,
