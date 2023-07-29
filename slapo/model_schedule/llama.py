@@ -37,10 +37,11 @@ def shard_mlp(sch, names):
 
 def replace_sdp(sch, config):
     # Replace efficient kernels
-    def pattern(query_states, key_states, value_states):
+    def pattern(query_states, key_states, attention_mask, value_states):
         attn_weights = torch.matmul(
             query_states, key_states.transpose(2, 3)
         ) / math.sqrt(config.hidden_size // config.num_attention_heads)
+        attn_weights = attn_weights + attention_mask
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(
             attn_weights, dim=-1, dtype=torch.float32
@@ -50,8 +51,11 @@ def replace_sdp(sch, config):
 
     class EfficientAttention(torch.nn.Module):
         # Be careful of the order of the arguments
-        def forward(self, key_layer, query_layer, value_layer):
-            return F.scaled_dot_product_attention(query_layer, key_layer, value_layer)
+        # https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+        def forward(self, key_layer, query_layer, attention_mask, value_layer):
+            return F.scaled_dot_product_attention(
+                query_layer, key_layer, value_layer, attn_mask=attention_mask
+            )
 
     subgraphs = sch.find(pattern)
     assert len(subgraphs) > 0
@@ -126,7 +130,7 @@ def _apply_schedule(
         trace_attention(
             sch[f"layers.{idx}.self_attn"],
             model_config,
-            input_names=["hidden_states", "position_ids"],
+            input_names=["hidden_states", "attention_mask", "position_ids"],
             leaf_modules=["LlamaRotaryEmbedding"],
             leaf_functions=[apply_rotary_pos_emb],
         )
@@ -182,53 +186,3 @@ def annotate_layernorm_and_bias(sch):
         if issubclass(sub_sch.mod.__class__, LinearWithSyncFunc):
             sub_sch.annotate("bias", "replicated_param", True)
         annotate_layernorm_and_bias(sub_sch)
-
-
-def checkpoint(
-    sch, model_config, path="layers.N", ckpt_ratio=1.0, checkpoint_method="uniform"
-):
-    """Add activation checkpointing to the model. The ckpt_ratio specifies
-    the ratio of the attention layers to be checkpointed. For example, if
-    ckpt_ratio is 0.5, then half of the attention layers will be checkpointed.
-
-    Parameters
-    ----------
-    sch : slapo.Schedule
-        The schedule of the model.
-    model_config : GPT2Config
-        The configuration of the model.
-    path : str
-        The path to the attention layer. Default: "h.N.attn".
-    ckpt_ratio : float
-        The ratio of the attention layers to be checkpointed. Default: 1.0.
-    checkpoint_method : str
-        The checkpointing method. Default: "uniform".
-    """
-    if ckpt_ratio == 0.0:
-        return 0
-
-    def order_args_fn(*args, **kwargs):
-        assert len(args) == 1
-        attention_mask = kwargs.get("attention_mask", None)
-        head_mask = kwargs.get("head_mask", None)
-        output_attentions = kwargs.get("output_attentions", False)
-        # Forward: (
-        #   hidden_states,
-        #   layer_past,
-        #   attention_mask,
-        #   head_mask,
-        #   use_cache,
-        #   output_attentions
-        # )
-        return (args[0], None, attention_mask, head_mask, False, output_attentions)
-
-    n_ckpt = int(model_config.num_hidden_layers * ckpt_ratio)
-    if checkpoint_method == "head":
-        for idx in range(n_ckpt):
-            sch[path.replace("N", str(idx))].checkpoint(order_args_fn=order_args_fn)
-    elif checkpoint_method == "uniform" and ckpt_ratio > 0:
-        for idx in range(
-            0, model_config.num_hidden_layers, max(1, int(1 / ckpt_ratio))
-        ):
-            sch[path.replace("N", str(idx))].checkpoint(order_args_fn=order_args_fn)
-    return n_ckpt
