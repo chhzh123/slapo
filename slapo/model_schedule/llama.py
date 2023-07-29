@@ -62,6 +62,26 @@ def replace_sdp(sch, config):
     sch.replace(EfficientAttention(), subgraphs)
 
 
+def replace_rotary_pos_emb(sch, name="apply_rotary_pos_emb"):
+    subgraph = sch.find_node(
+        lambda node: node.op == "call_function" and name in node.target.__name__
+    )
+
+    class JitApplyRotary(nn.Module):
+        def __init__(self):
+            super().__init__()
+            # self.apply_rotary_emb = torch.jit.script(apply_rotary_pos_emb)
+            self.apply_rotary_emb = torch.compile(apply_rotary_pos_emb)
+
+        def forward(self, query_states, key_states, cos, sin, position_ids):
+            return self.apply_rotary_emb(
+                query_states, key_states, cos, sin, position_ids
+            )
+
+    assert len(subgraph) == 1
+    sch.replace(JitApplyRotary(), target_ops=[subgraph])
+
+
 @register_schedule()
 def _apply_schedule(
     model,
@@ -135,6 +155,7 @@ def _apply_schedule(
             leaf_functions=[apply_rotary_pos_emb],
         )
         replace_sdp(sch[f"layers.{idx}.self_attn"], model_config)
+        replace_rotary_pos_emb(sch[f"layers.{idx}.self_attn"])
 
     if sch.world_size > 1 and sch_config.get("bcast_input", False):
         # Broadcast input to all devices within the MP group.
