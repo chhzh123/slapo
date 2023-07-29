@@ -93,6 +93,7 @@ def train(args):
             attn_op_name=args.attn_op_name,
             ckpt_ratio=args.checkpoint,
             bcast_input=True,
+            disable_fusion=True,
             group=group,
             pipeline_cuts=pipeline_cuts,
             delay_init=enable_pipeline,
@@ -234,6 +235,16 @@ if __name__ == "__main__":
         help="Attention op name {'native_xformers', 'cutlass', 'triton', 'cuda'}. "
         "'cuda' and 'triton' only support sm_80+, and other archs will "
         "fallback to 'cutlas'",
+    )
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="fp16 is enabled. fp16 is enabled by default",
+    )
+    parser.add_argument(
+        "--bf16",
+        action="store_true",
+        help="bf16 is enabled",
     )
     parser.add_argument(
         "--disable_pipeline",
