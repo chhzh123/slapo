@@ -75,11 +75,18 @@ def train(args):
         dist.broadcast(x, src=0)
 
     # https://huggingface.co/bert-large-uncased/blob/main/config.json
-    model_config = AutoConfig.from_pretrained(args.model_name)
+    if args.model_name == "bert-xlarge":
+        model_config = AutoConfig.from_pretrained("bert-large-uncased")
+    else:
+        model_config = AutoConfig.from_pretrained(args.model_name)
     model_config.vocab_size = (model_config.vocab_size // 8 + 1) * 8
     model_config.gradient_checkpointing = use_default_ckpt
     # adjust the configuration, if the args.hidden_size is specified
     model_config = reconfig_model(args, model_config)
+    if args.model_name == "bert-xlarge":
+        model_config.num_hidden_layers = 24
+        model_config.hidden_size = 2048
+        model_config.max_position_embeddings = 1024
     logger.info(f"model config: {model_config}", ranks=[0])
 
     report_memory(msg="Before creating model")
@@ -200,7 +207,7 @@ def train(args):
 
     train_loader, _ = get_dataloader(
         args.model_name,
-        "wikitext-103-v1",
+        "wikitext-2-v1",
         micro_batch_size,
         enable_pipeline,
         collate_fn=collate_fn,
@@ -261,7 +268,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--seq_len",
         type=int,
-        default=512,
+        default=1024,
         help="Sequence length",
     )
     parser.add_argument(

@@ -37,7 +37,13 @@ def get_model(
     impl="slapo",
     delay_init=True,
 ):
-    config = AutoConfig.from_pretrained(model_name)
+    if model_name == "bert-xlarge":
+        config = AutoConfig.from_pretrained("bert-large-uncased")
+        config.num_hidden_layers = 24
+        config.hidden_size = 2048
+        config.max_position_embeddings = 1024
+    else:
+        config = AutoConfig.from_pretrained(model_name)
     if padded_vocab_size is not None:
         config.vocab_size = padded_vocab_size
     config.type_vocab_size = 2 if binary_head else 0
@@ -60,7 +66,7 @@ def get_model(
             attn_op_name="native_xformers" if disable_flash_attn else "cuda",
             fp16=fp16,
             ckpt_ratio=ckpt_ratio,
-            disable_fuse_bias_gelu=True,
+            disable_fusion=False,
             delay_init=delay_init,
         )
         model, _ = slapo.build(sch, init_weights=model._init_weights)

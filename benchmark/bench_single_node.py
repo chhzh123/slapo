@@ -52,7 +52,13 @@ class Exp:
         self.launcher = f"torchrun --nproc_per_node {self.num_gpus}"
 
         try:
-            model_conf = AutoConfig.from_pretrained(self.model)
+            if self.model == "bert-xlarge":
+                model_conf = AutoConfig.from_pretrained("bert-large-uncased")
+                model_conf.num_hidden_layers = 24
+                model_conf.hidden_size = 2048
+                model_conf.max_position_embeddings = 1024
+            else:
+                model_conf = AutoConfig.from_pretrained(self.model)
         except:
             # Not a model in HF hub. Use fake values to avoid Megatron errors.
             self.num_layers = 1

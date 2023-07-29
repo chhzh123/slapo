@@ -38,7 +38,9 @@ def get_dataloader(
 
     if "bert" in model_name:
         tokenizer = AutoTokenizer.from_pretrained("bert-large-uncased")
-    if "gpt" in model_name:
+        if "xlarge" in model_name:
+            tokenizer.model_max_length = 1024
+    elif "gpt" in model_name:
         tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neo-1.3B")
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
