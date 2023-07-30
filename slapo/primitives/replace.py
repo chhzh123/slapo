@@ -86,7 +86,8 @@ def get_required_args(sig, ops, concrete_args=None, check=True):
             f"new module ({len(mod_args_need_inputs)}) does not match "
             "the number of arguments of the original subgraph "
             f"({len(subgraph_args)}). Please use `concrete_args` to "
-            "specify the arguments."
+            f"specify the arguments. Those arguments are {mod_args_need_inputs}, "
+            f"while the arguments of the original subgraph are {subgraph_args}."
         )
     return subgraph_args, new_kwargs
 

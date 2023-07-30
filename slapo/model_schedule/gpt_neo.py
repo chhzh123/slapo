@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """HuggingFace GPT-Neo with model schedule."""
 
+import torch
 from torch import nn
 
 from ..schedule import create_schedule
@@ -13,7 +14,6 @@ from .base import (
     shard_mlp,
     shard_word_embedding,
     broadcast_input,
-    uniform_checkpoint,
     trace_attention,
     replace_sdp,
     fuse_bias_gelu,
@@ -85,9 +85,7 @@ def _apply_schedule(
                 names=["c_fc", "c_proj"],
                 backward=True,
             )
-        logger.info(
-            "Shard %d attention layers", model_config.num_layers, ranks=0
-        )
+        logger.info("Shard %d attention layers", model_config.num_layers, ranks=0)
 
     # Replace efficient kernels.
     for idx in range(model_config.num_layers):
@@ -96,9 +94,12 @@ def _apply_schedule(
             model_config,
             input_names=["hidden_states", "attention_mask"],
         )
+        subgraphs = find_gpt_attention(sch[f"h.{idx}.attn.attention"])
+        assert len(subgraphs) > 0
         replace_sdp(
             sch[f"h.{idx}.attn.attention"],
             model_config,
+            subgraphs=subgraphs,
             mask=True,
             dropout=model_config.attention_dropout,
         )
@@ -136,6 +137,25 @@ def _apply_schedule(
         generate_pipeline_stages(sch, sch_config)
 
     return orig_sch
+
+
+def find_gpt_attention(sch):
+    subgraph = []
+    flag = False
+    for node in sch.mod.graph.nodes:
+        # Start capturing subgraph
+        if node.op == "call_method" and node.target == "to":
+            flag = True
+        if flag:
+            subgraph.append(("", node))
+        # Stop capturing subgraph
+        if (
+            node.op == "call_function"
+            and node.target == torch.matmul
+            and node.args[0].op == "call_module"
+        ):
+            flag = False
+    return [subgraph]
 
 
 def annotate_layernorm_and_bias(sch):

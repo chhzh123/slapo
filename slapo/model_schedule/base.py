@@ -174,27 +174,8 @@ def shard_mlp(sch, names=["c_fc", "c_proj"], backward=False):
         sch[l1].sync("bwd_post", sync_op_or_fn="all_reduce")
 
 
-def find_gpt_attention(sch):
-    subgraph = []
-    flag = False
-    for node in sch.mod.graph.nodes:
-        # Start capturing subgraph
-        if node.op == "call_method" and node.target == "to":
-            flag = True
-        if flag:
-            subgraph.append(("", node))
-        # Stop capturing subgraph
-        if (
-            node.op == "call_function"
-            and node.target == torch.matmul
-            and node.args[0].op == "call_module"
-        ):
-            flag = False
-    return [subgraph]
-
-
-def replace_sdp(sch, config, pattern=None, mask=False, dropout=0.0):
-    if pattern is None:
+def replace_sdp(sch, config, subgraphs=None, mask=False, dropout=0.0):
+    if subgraphs is None:
 
         def scaled_dot_product(query_layer, key_layer, value_layer):
             attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
@@ -207,9 +188,9 @@ def replace_sdp(sch, config, pattern=None, mask=False, dropout=0.0):
             return context_layer
 
         pattern = scaled_dot_product
-    if not mask:
         subgraphs = sch.find(pattern)
-        assert len(subgraphs) > 0
+    assert len(subgraphs) > 0
+    if not mask:
 
         class EfficientAttention(torch.nn.Module):
             # Be careful of the order of the arguments
@@ -219,13 +200,15 @@ def replace_sdp(sch, config, pattern=None, mask=False, dropout=0.0):
                 )
 
     else:
-        subgraphs = find_gpt_attention(sch)
-        assert len(subgraphs) > 0
 
         class EfficientAttention(torch.nn.Module):
             def forward(self, query_layer, key_layer, attention_mask, value_layer):
                 return F.scaled_dot_product_attention(
-                    query_layer, key_layer, value_layer, attn_mask=attention_mask, dropout_p=dropout
+                    query_layer,
+                    key_layer,
+                    value_layer,
+                    attn_mask=attention_mask,
+                    dropout_p=dropout,
                 )
 
     sch.replace(EfficientAttention(), subgraphs)
