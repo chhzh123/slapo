@@ -86,7 +86,7 @@ def _apply_schedule(
                 backward=True,
             )
         logger.info(
-            "Shard %d attention layers", model_config.num_hidden_layers, ranks=0
+            "Shard %d attention layers", model_config.num_layers, ranks=0
         )
 
     # Replace efficient kernels.
@@ -123,9 +123,7 @@ def _apply_schedule(
     if ckpt_ratio > 0.0:
         prefix = sch_config.get("prefix", "")
         logger.info("Checkpoint ratio: %.2f", ckpt_ratio, ranks=0)
-        n_ckpt = uniform_checkpoint(
-            sch, model_config.num_hidden_layers, ckpt_ratio=ckpt_ratio
-        )
+        n_ckpt = checkpoint(sch, model_config, ckpt_ratio=ckpt_ratio)
         logger.info("Checkpointed %d layers", n_ckpt, ranks=0)
 
     sequence_parallel = sch_config.get("sequence_parallel", False)
