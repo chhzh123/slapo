@@ -230,7 +230,6 @@ def replace_sdp(sch, config, pattern=None, mask=False):
                 )
 
     sch.replace(EfficientAttention(), subgraphs)
-    print(sch.mod)
 
 
 def fuse_bias_gelu(sch, name="dense", act="act", tracer="pytorch", **kwargs):

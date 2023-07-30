@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-
+"""Train with DeepSpeed ZeRO-3 or pipeline."""
 import os
 import argparse
 
@@ -22,17 +22,25 @@ from examples.utils import (
     create_dist_group_for_pipeline,
     generate_pipeline_cuts,
 )
+from examples.data_util import get_dataloader
 
 SINGLE_DEVICE_FOR_DEBUG = False
 
 logger = get_logger()
 
 
+def reconfig_model(args, model_config):
+    if args.hidden_size > 0:
+        model_config.hidden_size = args.hidden_size
+        model_config.num_hidden_layers = args.nlayers
+        model_config.intermediate_size = args.intermediate_size
+        model_config.num_attention_heads = args.num_attn_heads
+
+    return model_config
+
 def train(args):
     batch_size = args.batch_size
     micro_batch_size = args.micro_batch_size
-    if micro_batch_size is None:
-        micro_batch_size = 4
 
     num_pp, num_mp = 1, 1
     rank = args.local_rank
@@ -50,7 +58,9 @@ def train(args):
         deepspeed.init_distributed(dist_backend="nccl")
         logger.info("Use deepspeed to initialize", ranks=0)
         if enable_pipeline:
-            num_pp, num_mp = 4, 2  # FIXME: May need to change for multi-node.
+            # num_pp, num_mp = 4, 2 # For single node testing.
+            num_pp = args.pmp
+            num_mp = args.tmp
         else:
             logger.info("Pipeline disabled", ranks=0)
         topology, group = create_dist_group_for_pipeline(num_pp, num_mp)
@@ -63,20 +73,33 @@ def train(args):
         x = torch.tensor(0, device=torch.cuda.current_device())
         dist.broadcast(x, src=0)
 
-    config = AutoConfig.from_pretrained(args.model_name)
-    config.use_cache = False
-    config.gradient_checkpointing = use_default_ckpt
+    # https://huggingface.co/bert-large-uncased/blob/main/config.json
+    if args.model_name == "roberta-xlarge":
+        model_config = AutoConfig.from_pretrained("roberta-large")
+    else:
+        model_config = AutoConfig.from_pretrained(args.model_name)
+    # model_config.vocab_size = (model_config.vocab_size // 8 + 1) * 8
+    model_config.gradient_checkpointing = use_default_ckpt
+    # adjust the configuration, if the args.hidden_size is specified
+    # model_config = reconfig_model(args, model_config)
+    if args.model_name == "roberta-xlarge":
+        model_config.num_hidden_layers = 24
+        model_config.hidden_size = 2048
+        model_config.intermediate_size = 8192
+        model_config.max_position_embeddings = 1024
+    model_config.use_cache = False
+    logger.info(f"model config: {model_config}", ranks=[0])
 
     report_memory(msg="Before creating model")
     with slapo.init_empty_weights(enable=enable_pipeline):
-        model = RobertaForCausalLM(config)
+        model = RobertaForCausalLM(model_config)
     report_memory(msg="After creating model")
 
     # Evenly partition layers for pipelining.
     if enable_pipeline:
-        pipeline_cuts = generate_pipeline_cuts(config.num_hidden_layers, num_pp)
+        pipeline_cuts = generate_pipeline_cuts(model_config.num_hidden_layers, num_pp)
     elif SINGLE_DEVICE_FOR_DEBUG:
-        pipeline_cuts = generate_pipeline_cuts(config.num_hidden_layers, 4)
+        pipeline_cuts = generate_pipeline_cuts(model_config.num_hidden_layers, 4)
     else:
         pipeline_cuts = []
     logger.info(f"Pipeline cuts: {pipeline_cuts}", ranks=0)
@@ -88,11 +111,13 @@ def train(args):
         sch = apply_schedule(
             model,
             "roberta",
-            model_config=config,
+            model_config=model_config,
             prefix="roberta",
             attn_op_name=args.attn_op_name,
             ckpt_ratio=args.checkpoint,
             bcast_input=True,
+            fp16=args.fp16,
+            bf16=args.bf16,
             group=group,
             disable_fusion=True,
             pipeline_cuts=pipeline_cuts,
@@ -247,8 +272,47 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable Slapo schedule (only applicable with --disable-pipeline)",
     )
+    parser.add_argument(
+        "--hidden-size",
+        type=int,
+        default=-1,
+        help="Config hidden size of the model, if it is negative value,"
+        " it uses default value associated with the model name",
+    )
+    parser.add_argument(
+        "--intermediate-size",
+        type=int,
+        default=-1,
+        help="ffn intermediate size, 4 * hidden_size",
+    )
+    parser.add_argument(
+        "--nlayers", type=int, default=-1, help="number of transformer layers"
+    )
+    parser.add_argument(
+        "--num-attn-heads", type=int, default=-1, help="number of attention heads"
+    )
+    parser.add_argument(
+        "--pmp", type=int, default=2, help="Pipeline model parallel size"
+    )
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="fp16 is enabled. fp16 is enabled by default",
+    )
+    parser.add_argument(
+        "--bf16",
+        action="store_true",
+        help="bf16 is enabled",
+    )
+    parser.add_argument("--tmp", type=int, default=8, help="Tensor parallel size")
     args = parser.parse_args()
     if os.environ.get("LOCAL_RANK"):
         args.local_rank = int(os.environ["LOCAL_RANK"])
+
+    if args.hidden_size > 0:
+        assert args.intermediate_size > 0, "must have intermediate_size > 0"
+        assert args.nlayers > 0, "must have nlayers > 0"
+        assert args.num_attn_heads > 0, "must have num_attn_heads > 0"
+
     # The main entry point is called directly without using subprocess
     train(args)

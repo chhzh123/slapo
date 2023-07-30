@@ -57,6 +57,13 @@ class Exp:
                 model_conf.num_hidden_layers = 24
                 model_conf.hidden_size = 2048
                 model_conf.max_position_embeddings = 1024
+            elif self.model == "roberta-xlarge":
+                model_conf = AutoConfig.from_pretrained("roberta-large")
+                model_conf.num_hidden_layers = 24
+                model_conf.hidden_size = 2048
+                model_conf.intermediate_size = 8192
+                model_conf.max_position_embeddings = 1024
+                model_conf.use_cache = False
             elif self.model == "EleutherAI/gpt-neo-2.7B":
                 model_conf = AutoConfig.from_pretrained(self.model)
                 model_conf.num_heads = 24

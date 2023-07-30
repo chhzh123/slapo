@@ -34,9 +34,18 @@ def get_model(
     impl="slapo",
     delay_init=True,
 ):
-    config = AutoConfig.from_pretrained(model_name)
+    if model_name == "roberta-xlarge":
+        config = AutoConfig.from_pretrained("roberta-large")
+        config.num_hidden_layers = 24
+        config.hidden_size = 2048
+        config.intermediate_size = 8192
+        config.max_position_embeddings = 1024
+    else:
+        config = AutoConfig.from_pretrained(model_name)
     if padded_vocab_size is not None:
         config.vocab_size = padded_vocab_size
+    config.use_cache = False
+    config.pad_token_id = 0
     config.type_vocab_size = 2 if binary_head else 0
     print_rank_0(config)
 
@@ -57,7 +66,7 @@ def get_model(
             attn_op_name="native_xformers" if disable_flash_attn else "cuda",
             fp16=fp16,
             ckpt_ratio=ckpt_ratio,
-            disable_fuse_bias_gelu=False,
+            disable_fusion=True,
             delay_init=delay_init,
         )
         model, _ = slapo.build(sch, init_weights=model._init_weights)
@@ -97,6 +106,8 @@ def get_model(
 def model_provider(pre_process=True, post_process=True):
     args = get_args()
     model_name = os.environ.get("MODEL_NAME", None)
+    if model_name == "roberta-xlarge":
+        args.hidden_size = 2048
     if model_name is None:
         raise RuntimeError("'MODEL_NAME' not found in environment")
     disable_flash_attn = bool(int(os.environ.get("DISABLE_FLASH_ATTN", "0")))
@@ -175,6 +186,7 @@ def model_provider(pre_process=True, post_process=True):
 
     model = RoBERTaWithLMHead(add_pooling_layer=args.bert_binary_head)
     print_rank_0(model)
+    print_rank_0(f"# params: {sum(p.numel() for p in model.parameters())}")
     return model
 
 
@@ -269,7 +281,6 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
 
 
 if __name__ == "__main__":
-
     pretrain(
         train_valid_test_datasets_provider,
         model_provider,
