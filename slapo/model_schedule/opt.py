@@ -165,12 +165,16 @@ def find_opt_attention(sch):
     flag = False
     for node in sch.mod.graph.nodes:
         # Start capturing subgraph
+        # %view_3 : [#users=1] = call_method[target=view](args = (%contiguous_2, %mul_1, -1, 80), kwargs = {})
+        # %view_4 : [#users=2] = call_method[target=view](args = (%contiguous, %mul_1, -1, 80), kwargs = {})
+        # %view_5 : [#users=1] = call_method[target=view](args = (%contiguous_1, %mul_1, -1, 80), kwargs = {})
         # %size_1 : [#users=2] = call_method[target=size](args = (%view_4, 1), kwargs = {})
         # %transpose_3 : [#users=1] = call_method[target=transpose](args = (%view_4, 1, 2), kwargs = {})
         if (
             node.op == "call_method"
-            and node.target == "size"
+            and node.target == "view"
             and node.args[0].op == "call_method"
+            and node.args[0].target == "contiguous"
         ):
             flag = True
         if flag:
@@ -206,7 +210,7 @@ def replace_sdp(sch, config, subgraphs=None, mask=False, dropout=0.0):
 
     class EfficientAttention(torch.nn.Module):
         def forward(
-            self, query_layer, key_layer, bs, tgt_len, attention_mask, value_layer
+            self, query_layer, mul, key_layer, value_layer, bs, tgt_len, attention_mask
         ):
             return F.scaled_dot_product_attention(
                 query_layer,
