@@ -107,9 +107,14 @@ def _apply_schedule(
     # Insert activation checkpoints.
     ckpt_ratio = sch_config.get("ckpt_ratio", 0.0)
     if ckpt_ratio > 0.0:
-        prefix = sch_config.get("prefix", "")
+        checkpoint_method = sch_config.get("checkpoint_method", "uniform")
         logger.info("Checkpoint ratio: %.2f", ckpt_ratio, ranks=0)
-        n_ckpt = uniform_checkpoint(sch, model_config.num_layers, ckpt_ratio=ckpt_ratio)
+        n_ckpt = checkpoint(
+            sch,
+            model_config,
+            ckpt_ratio=ckpt_ratio,
+            checkpoint_method=checkpoint_method,
+        )
         logger.info("Checkpointed %d layers", n_ckpt, ranks=0)
 
     # Pipeline parallelism.
@@ -174,3 +179,70 @@ def fix_position_bias_shape(sch):
     if "relative_attention_bias" in sch:
         sch["relative_attention_bias"].shard("weight", axis=1)
         print("Sharded relative_attention_bias.weight along the num_heads dimension")
+
+
+def _checkpoint(sch, model_config, path, ckpt_ratio=1.0):
+    if ckpt_ratio == 0.0:
+        return 0
+
+    n_ckpt = int(model_config.num_hidden_layers * ckpt_ratio)
+    for idx in range(n_ckpt):
+        sch[path.replace("N", str(idx))].checkpoint()
+    return n_ckpt
+
+
+def checkpoint(
+    sch,
+    model_config,
+    path="",
+    ckpt_ratio=1.0,
+    checkpoint_method="uniform",
+):
+    if checkpoint_method != "uniform":
+        raise NotImplementedError(
+            f"Checkpoint method {checkpoint_method} is not supported yet."
+        )
+    n_ckpt = 0
+    if ckpt_ratio > 0.0:
+        n_ckpt += _checkpoint(
+            sch, model_config, "encoder.block.N", ckpt_ratio=ckpt_ratio
+        )
+        n_ckpt += _checkpoint(
+            sch, model_config, "decoder.block.N", ckpt_ratio=ckpt_ratio
+        )
+    return n_ckpt
+
+
+def generate_pipeline_schedule(sch, sch_config):
+    pipeline_cuts = sch_config.get("pipeline_cuts", None)
+    prefix = sch_config.get("prefix", "")
+    # Cut pipeline stages. For example, [[11], [11]] means to cut
+    # encoder.block.11, decoder.block.11. And we always cut between encoder/decoder,
+    # so there will be 4 stages in total.
+    if pipeline_cuts:
+        assert len(pipeline_cuts) == 2
+        input_names = [
+            "decoder_input_ids",
+            "input_ids",
+            "decoder_attention_mask",
+            "attention_mask",
+        ]
+        sig = inspect.signature(sch.mod.forward)
+        concrete_args = {
+            p.name: p.default
+            for p in sig.parameters.values()
+            if p.name not in input_names
+        }
+        _prefix = f"{prefix}." if prefix else ""
+        sch.trace_until(
+            [f"{_prefix}encoder", f"{_prefix}decoder"],
+            tracer="huggingface",
+            concrete_args=concrete_args,
+        )
+        for cut in pipeline_cuts[0]:
+            sch[f"{_prefix}encoder.block.{cut}"].cut_pipeline_stage()
+        sch[f"{_prefix}encoder"].cut_pipeline_stage()
+        for cut in pipeline_cuts[1]:
+            sch[f"{_prefix}decoder.block.{cut}"].cut_pipeline_stage()
+
+    return sch
