@@ -494,10 +494,10 @@ class Schedule:
             return True
 
         failed_msg = None
-        try:
-            gm = trace_module(self.mod, recursive=recursive, flatten=flatten, **kwargs)
-        except Exception as err:
-            failed_msg = str(err)
+        # try:
+        gm = trace_module(self.mod, recursive=recursive, flatten=flatten, **kwargs)
+        # except Exception as err:
+        #     failed_msg = str(err)
 
         if failed_msg is None and isinstance(gm, fx.GraphModule):
             self.replace(gm)
