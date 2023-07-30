@@ -193,7 +193,7 @@ def find_gpt_attention(sch):
     return [subgraph]
 
 
-def replace_sdp(sch, config, pattern=None, mask=False):
+def replace_sdp(sch, config, pattern=None, mask=False, dropout=0.0):
     if pattern is None:
 
         def scaled_dot_product(query_layer, key_layer, value_layer):
@@ -223,10 +223,9 @@ def replace_sdp(sch, config, pattern=None, mask=False):
         assert len(subgraphs) > 0
 
         class EfficientAttention(torch.nn.Module):
-            # TODO: Add attention mask
-            def forward(self, query_layer, key_layer, value_layer):
+            def forward(self, query_layer, key_layer, attention_mask, value_layer):
                 return F.scaled_dot_product_attention(
-                    query_layer, key_layer, value_layer
+                    query_layer, key_layer, value_layer, attn_mask=attention_mask, dropout_p=dropout
                 )
 
     sch.replace(EfficientAttention(), subgraphs)

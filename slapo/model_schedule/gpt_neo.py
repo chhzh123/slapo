@@ -91,8 +91,17 @@ def _apply_schedule(
 
     # Replace efficient kernels.
     for idx in range(model_config.num_layers):
-        trace_attention(sch[f"h.{idx}.attn.attention"], model_config)
-        replace_sdp(sch[f"h.{idx}.attn.attention"], model_config, mask=True)
+        trace_attention(
+            sch[f"h.{idx}.attn.attention"],
+            model_config,
+            input_names=["hidden_states", "attention_mask"],
+        )
+        replace_sdp(
+            sch[f"h.{idx}.attn.attention"],
+            model_config,
+            mask=True,
+            dropout=model_config.attention_dropout,
+        )
         if not sch_config.get("disable_fusion", False):
             fuse_bias_gelu(sch[f"h.{idx}.mlp"], name="c_fc", act="act")
             # fuse_ln_residual(
