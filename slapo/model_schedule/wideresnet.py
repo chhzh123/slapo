@@ -5,7 +5,6 @@
 import inspect
 
 import torch
-from torch import nn
 import torch.distributed as dist
 
 from ..schedule import create_schedule
@@ -53,15 +52,17 @@ def _apply_schedule(
         ranks=0,
     )
 
-    # Operator fusion
     prefix = sch_config.get("prefix", "")
-    if sch_config.get("fuse_conv", False):
-        fuse_conv_bn(sch[prefix], model_config)
 
     # Tensor parallelism.
     if sch.world_size > 1:
         logger.info("Shard model parameters", ranks=0)
         shard_layers(sch[prefix], model_config)
+
+    # Operator fusion
+    if not sch_config.get("disable_fusion", False):
+        logger.info("Fuse conv and bn", ranks=0)
+        fuse_conv_bn(sch[prefix], model_config)
 
     if sch.world_size > 1 and sch_config.get("bcast_input", False):
         # Broadcast input to all devices within the MP group.
@@ -119,55 +120,13 @@ def generate_pipeline_schedule(sch, sch_config):
 
 
 def fuse_conv_bn(sch, model_config):
-    from torchvision.models.resnet import Bottleneck
-
-    inplanes = 64
-    expansion = 4
-    all_planes = [64, 128, 256, 512]
-    all_strides = [1, 2, 2, 2]
-    in_sizes = [112, 56, 28, 14]
-    base_width, num_layers = model_config["block_size"]
+    _, num_layers = model_config["block_size"]
     for i in range(4):
-        planes = all_planes[i]
         layers = num_layers[i]
-        stride = all_strides[i]
-        in_size = in_sizes[i]
-        if stride != 1 or inplanes != planes * 4:
-            downsample = nn.Sequential(
-                nn.Conv2d(
-                    inplanes,
-                    planes * expansion,
-                    kernel_size=1,
-                    stride=stride,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(planes * expansion),
-            )
-        data = torch.rand((8, inplanes, in_size, in_size), dtype=torch.float).cuda()
-        new_block = torch.jit.trace(
-            Bottleneck(
-                inplanes=inplanes,
-                planes=planes,
-                stride=stride,
-                downsample=downsample,
-                base_width=base_width,
-            ).cuda(),
-            data,
-        )
+        new_block = torch.jit.script(sch[f"layer{i+1}"]["0"].mod)
         sch[f"layer{i+1}"]["0"].replace(new_block)
-        inplanes = planes * expansion
-        data = torch.rand(
-            (8, inplanes, in_size // 2, in_size // 2), dtype=torch.float
-        ).cuda()
         for j in range(1, layers):
-            new_block = torch.jit.trace(
-                Bottleneck(
-                    inplanes=inplanes,
-                    planes=planes,
-                    base_width=base_width,
-                ).cuda(),
-                data,
-            )
+            new_block = torch.jit.script(sch[f"layer{i+1}"][f"{j}"].mod)
             sch[f"layer{i+1}"][f"{j}"].replace(new_block)
     print(sch.mod)
 

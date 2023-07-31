@@ -95,7 +95,7 @@ def train(args):
             group=group,
             fp16=args.fp16,
             pipeline_cuts=pipeline_cuts,
-            fuse_conv=(dist.get_world_size() == 1),
+            disable_fusion=True,
         )
 
     if enable_pipeline:
@@ -135,6 +135,7 @@ def train(args):
         )
         model = model.to(device)
     report_memory(msg="After building model")
+    logger.info(model, ranks=0)
 
     loader = get_data_loader(
         micro_batch_size, device, dtype=torch.float16 if args.fp16 else torch.float

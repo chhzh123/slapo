@@ -51,6 +51,7 @@ def get_model(
     if "slapo" in impl:
         import slapo
         from slapo.model_schedule import apply_schedule
+        from slapo.model_schedule.wideresnet import fuse_conv_bn
 
         with slapo.init_empty_weights(enable=delay_init):
             model = get_wideresnet_model(*config["block_size"])
@@ -62,9 +63,11 @@ def get_model(
             prefix="model",
             fp16=fp16,
             ckpt_ratio=ckpt_ratio,
-            fuse_conv=(dist.get_world_size() == 1),
+            disable_fusion=True,
         )
         model, _ = slapo.build(sch)
+        # model.cuda()
+        # fuse_conv_bn(sch["model"], config)
 
     elif impl == "torchscript":
         if ckpt_ratio > 0:
