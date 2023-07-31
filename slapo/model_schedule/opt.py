@@ -16,7 +16,6 @@ from .base import (
     shard_mlp,
     shard_word_embedding,
     broadcast_input,
-    uniform_checkpoint,
     trace_attention,
     fuse_bias_gelu,
     fuse_ln_residual,
@@ -147,8 +146,11 @@ def _apply_schedule(
     if ckpt_ratio > 0.0:
         prefix = sch_config.get("prefix", "")
         logger.info("Checkpoint ratio: %.2f", ckpt_ratio, ranks=0)
-        n_ckpt = uniform_checkpoint(
-            sch, model_config.num_hidden_layers, ckpt_ratio=ckpt_ratio
+        n_ckpt = checkpoint(
+            sch,
+            model_config,
+            path="decoder.layers.N",
+            ckpt_ratio=ckpt_ratio,
         )
         logger.info("Checkpointed %d layers", n_ckpt, ranks=0)
 
@@ -221,3 +223,51 @@ def replace_sdp(sch, config, subgraphs=None, mask=False, dropout=0.0):
             )
 
     sch.replace(EfficientAttention(), subgraphs)
+
+
+def checkpoint(
+    sch, model_config, path="h.N", ckpt_ratio=1.0, checkpoint_method="uniform"
+):
+    """Add activation checkpointing to the model. The ckpt_ratio specifies
+    the ratio of the attention layers to be checkpointed. For example, if
+    ckpt_ratio is 0.5, then half of the attention layers will be checkpointed.
+
+    Parameters
+    ----------
+    sch : slapo.Schedule
+        The schedule of the model.
+    model_config : GPT2Config
+        The configuration of the model.
+    path : str
+        The path to the attention layer. Default: "h.N.attn".
+    ckpt_ratio : float
+        The ratio of the attention layers to be checkpointed. Default: 1.0.
+    checkpoint_method : str
+        The checkpointing method. Default: "uniform".
+    """
+    if ckpt_ratio == 0.0:
+        return 0
+
+    def order_args_fn(*args, **kwargs):
+        assert len(args) == 1
+        attention_mask = kwargs.get("attention_mask", None)
+        # Forward: (
+        # hidden_states: torch.Tensor,
+        # attention_mask: Optional[torch.Tensor] = None,
+        # layer_head_mask: Optional[torch.Tensor] = None,
+        # output_attentions: Optional[bool] = False,
+        # use_cache: Optional[bool] = False,
+        # past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        # )
+        return (args[0], attention_mask, None, False, False, None)
+
+    n_ckpt = int(model_config.num_hidden_layers * ckpt_ratio)
+    if checkpoint_method == "head":
+        for idx in range(n_ckpt):
+            sch[path.replace("N", str(idx))].checkpoint(order_args_fn=order_args_fn)
+    elif checkpoint_method == "uniform" and ckpt_ratio > 0:
+        for idx in range(
+            0, model_config.num_hidden_layers, max(1, int(1 / ckpt_ratio))
+        ):
+            sch[path.replace("N", str(idx))].checkpoint(order_args_fn=order_args_fn)
+    return n_ckpt
