@@ -25,7 +25,7 @@ class ResNetWithLoss(Module):
         output = self.model(x)
         loss = None
         if labels is not None:
-            loss = self.loss_fn(output, labels.squeeze())
+            loss = self.loss_fn(output, labels)
         return ResNetOutput(output=output, loss=loss)
 
 
