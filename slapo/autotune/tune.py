@@ -295,7 +295,7 @@ def tune(args, get_bs_range, eval_fn):
     training_script_args = convert_nargs_to_dict(args.training_script_args)
     min_bs, max_bs, step = get_bs_range(training_script_args)
     bs_range = list(range(min_bs, max_bs + 1, step))
-    ckpt_ratio_range = [1.0, 0.92, 0.84, 0.67, 0.5, 0.34, 0.25]
+    ckpt_ratio_range = [1.0, 0.92, 0.84, 0.67, 0.5, 0.34, 0.25, 0]
     early_stopping_patience = 0
 
     def is_valid(config):
@@ -338,7 +338,7 @@ def tune(args, get_bs_range, eval_fn):
             else:
                 early_stopping_patience += 1
             # set step 5 as the patience
-            if early_stopping_patience >= 5:
+            if early_stopping_patience > 10:
                 return mid, None, curr_best
             logger.info(
                 "\tCurrent best config: %s, thrpt: %.2f",
@@ -361,7 +361,7 @@ def tune(args, get_bs_range, eval_fn):
         thrpt = eval_fn(cfg_dict)
         logger.info("\tThroughput: %.2f", thrpt)
         curr_best = (cfg_dict.copy(), thrpt)
-        if thrpt == 0:  # OOM
+        if thrpt < 0.01:  # OOM
             mid, thrpt, curr_best = binary_search(
                 bs_range, cfg_dict, "batch_size", curr_best
             )
