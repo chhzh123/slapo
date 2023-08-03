@@ -86,7 +86,7 @@ git --no-pager diff
 popd
 ```
 
-- Apex (required by Megatron-LM)
+- Apex (required by Megatron-LM) 0da3ffb
 ```bash
 git clone https://github.com/NVIDIA/apex
 cd apex
