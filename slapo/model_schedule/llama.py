@@ -161,10 +161,10 @@ def _apply_schedule(
         )
 
     # Replace efficient kernels.
-    if sch_config.get("disable_fusion", False):
+    if not sch_config.get("disable_fusion", False):
         replace_layernorm(sch["norm"], model_config)
     for idx in range(model_config.num_hidden_layers):
-        if sch_config.get("disable_fusion", False):
+        if not sch_config.get("disable_fusion", False):
             replace_layernorm(sch[f"layers.{idx}.input_layernorm"], model_config)
             replace_layernorm(
                 sch[f"layers.{idx}.post_attention_layernorm"], model_config
