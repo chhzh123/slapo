@@ -292,9 +292,11 @@ def uniform_checkpoint(sch, num_layers, path="encoder.layer.N", ckpt_ratio=1.0):
 
 
 def broadcast_input(sch):
-    def broadcast(inputs):
+    group_src_rank = dist.get_global_rank(sch.group, 0)
+
+    def broadcast(_module, inputs):
         for inp in inputs:
-            dist.broadcast(inp, src=0, group=sch.group)
+            dist.broadcast(inp, src=group_src_rank, group=sch.group)
         return inputs
 
     sch.sync(mode="fwd_pre", sync_op_or_fn=broadcast)
