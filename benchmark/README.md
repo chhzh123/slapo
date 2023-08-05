@@ -14,9 +14,11 @@ Please use the following command to install the dependencies. We recommend insta
 ```bash
 # Install PyTorch
 # Please refer to https://pytorch.org/ for correct OS and CUDA version
-pip3 install torch torchvision
+pip3 install torch==2.0.1 torchvision
 # Install other dependencies
-pip3 install transformers datasets matplotlib tabulate networkx triton pybind11
+pip3 install datasets matplotlib tabulate networkx triton pybind11 sentencepiece
+# transformers 4.28.1
+sudo apt-get install ninja-build
 ```
 
 ### Install Efficient Kernels

@@ -132,7 +132,7 @@ def train(args):
             group=group,
             pipeline_cuts=pipeline_cuts,
             delay_init=enable_pipeline,
-            disable_fusion=not enable_pipeline,
+            disable_fusion=False, #not enable_pipeline,
             sequence_parallel=args.sequence_parallel,
             checkpoint_method=args.checkpoint_method,
         )
@@ -176,7 +176,6 @@ def train(args):
             loss_fn=loss_fn,
             init_weights=model._init_weights,
         )
-        logger.info(model, ranks=0)
     else:
         if batch_size is not None and micro_batch_size is None:
             micro_batch_size = batch_size // args.world_size
@@ -203,6 +202,7 @@ def train(args):
         )
         model = model.to(device)
     report_memory(msg="After building model")
+    logger.info(model, ranks=0)
 
     pp_rank = None if args.disable_pipeline else model.mpu.get_pipe_parallel_rank()
     set_random_seed(
