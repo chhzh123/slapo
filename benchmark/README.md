@@ -17,6 +17,8 @@ Please use the following command to install the dependencies. We recommend insta
 pip3 install torch torchvision
 # Install other dependencies
 pip3 install transformers datasets matplotlib tabulate networkx triton pybind11
+# Required by LLaMA
+pip3 install sentencepiece
 ```
 
 ### Install Efficient Kernels

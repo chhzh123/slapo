@@ -93,7 +93,11 @@ def _apply_schedule(
         trace_attention(sch[f"encoder.layer.{idx}.attention.self"], model_config)
         replace_sdp(sch[f"encoder.layer.{idx}.attention.self"], model_config)
         if not sch_config.get("disable_fusion", False):
-            fuse_bias_gelu(sch[f"encoder.layer.{idx}.intermediate"], name="dense", act="intermediate_act_fn")
+            fuse_bias_gelu(
+                sch[f"encoder.layer.{idx}.intermediate"],
+                name="dense",
+                act="intermediate_act_fn",
+            )
             fuse_ln_residual(
                 sch[f"encoder.layer.{idx}.attention.output"],
                 names=["dense", "LayerNorm"],
