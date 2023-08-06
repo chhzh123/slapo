@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """HuggingFace LLaMA with model schedule."""
 
+import inspect
 import math
 import torch
 from torch import nn
@@ -17,7 +18,6 @@ from .base import (
     broadcast_input,
     uniform_checkpoint,
     trace_attention,
-    generate_pipeline_stages,
 )
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, LlamaRMSNorm
 
@@ -183,7 +183,7 @@ def _apply_schedule(
         # Broadcast input to all devices within the MP group.
         # This is not required when running on Megatron.
         logger.info("Broadcast input to all devices", ranks=0)
-        broadcast_input(sch)
+        broadcast_input(orig_sch)
 
     # Insert activation checkpoints.
     ckpt_ratio = sch_config.get("ckpt_ratio", 0.0)
@@ -203,10 +203,11 @@ def _apply_schedule(
     if pipeline_cuts:
         logger.info("Generate pipeline schedule", ranks=0)
         generate_pipeline_stages(
-            sch,
+            orig_sch,
             pipeline_cuts,
-            prefix="",
-            input_names=["hidden_states", "attention_mask", "position_ids"],
+            model_config,
+            prefix="model.layers",
+            input_names=["input_ids", "attention_mask", "position_ids"],
         )
 
     return orig_sch
@@ -229,3 +230,41 @@ def annotate_layernorm_and_bias(sch):
         if issubclass(sub_sch.mod.__class__, LinearWithSyncFunc):
             sub_sch.annotate("bias", "replicated_param", True)
         annotate_layernorm_and_bias(sub_sch)
+
+
+def generate_pipeline_stages(
+    sch,
+    pipeline_cuts,
+    config,
+    prefix="",
+    input_names=["input_ids", "attention_mask", "token_type_ids"],
+):
+    sig = inspect.signature(sch.mod.forward)
+    concrete_args = {
+        p.name: p.default for p in sig.parameters.values() if p.name not in input_names
+    }
+    sch.trace(
+        recursive=False,
+        flatten=False,
+        tracer="pytorch",
+        concrete_args=concrete_args,
+        config=config,
+    )
+    sig = inspect.signature(sch["model"].mod.forward)
+    concrete_args = {
+        p.name: p.default for p in sig.parameters.values() if p.name not in input_names
+    }
+    from transformers.models.llama.modeling_llama import _expand_mask
+
+    sch["model"].trace(
+        recursive=False,
+        flatten=False,
+        tracer="pytorch",
+        concrete_args=concrete_args,
+        leaf_functions=[_expand_mask],
+        config=config,
+    )
+    for cut in pipeline_cuts:
+        sch[f"{prefix}.{cut}"].cut_pipeline_stage()
+
+    return sch

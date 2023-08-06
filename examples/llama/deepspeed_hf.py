@@ -74,6 +74,9 @@ def train(args):
             num_mp = args.tmp
         else:
             logger.info("Pipeline disabled", ranks=0)
+            num_pp = 1
+            num_mp = args.tmp
+
         topology, group = create_dist_group_for_pipeline(num_pp, num_mp)
 
         # FIXME: Pytorch _coalescing_manager requires all the ranks to join
@@ -105,9 +108,9 @@ def train(args):
 
     # Evenly partition layers for pipelining.
     if enable_pipeline:
-        pipeline_cuts = generate_pipeline_cuts(config.num_layers, num_pp)
+        pipeline_cuts = generate_pipeline_cuts(config.num_hidden_layers, num_pp)
     elif SINGLE_DEVICE_FOR_DEBUG:
-        pipeline_cuts = generate_pipeline_cuts(config.num_layers, 4)
+        pipeline_cuts = generate_pipeline_cuts(config.num_hidden_layers, 4)
     else:
         pipeline_cuts = []
     logger.info(f"Pipeline cuts: {pipeline_cuts}", ranks=0)
@@ -129,7 +132,7 @@ def train(args):
             group=group,
             pipeline_cuts=pipeline_cuts,
             delay_init=enable_pipeline,
-            disable_fusion=True,
+            disable_fusion=not enable_pipeline,
             sequence_parallel=args.sequence_parallel,
             checkpoint_method=args.checkpoint_method,
         )
@@ -173,14 +176,15 @@ def train(args):
             loss_fn=loss_fn,
             init_weights=model._init_weights,
         )
+        logger.info(model, ranks=0)
     else:
         if batch_size is not None and micro_batch_size is None:
             micro_batch_size = batch_size // args.world_size
         if batch_size is None and micro_batch_size is not None:
             batch_size = micro_batch_size * args.world_size
 
-        # if the TP == 1 use zero 3, otherwise use stage-1 optimizer
-        zero_opt_stage = 3  # if args.tmp == 1 else 1
+        # if the TP == 1 use zero 3, otherwise disable ZeRO.
+        zero_opt_stage = 3 if args.tmp == 1 else 0
         logger.info(f"BS={batch_size}, MBS={micro_batch_size}", ranks=0)
         ds_config_dict = get_ds_config(
             batch_size,
@@ -200,21 +204,21 @@ def train(args):
         model = model.to(device)
     report_memory(msg="After building model")
 
-    # pp_rank = None if args.disable_pipeline else model.mpu.get_pipe_parallel_rank()
-    # set_random_seed(
-    #     2013,
-    #     model.mpu.get_data_parallel_rank(),
-    #     pp_rank,
-    #     tp_rank,
-    #     always_enable_tp_seed=args.sequence_parallel,
-    # )
+    pp_rank = None if args.disable_pipeline else model.mpu.get_pipe_parallel_rank()
+    set_random_seed(
+        2013,
+        model.mpu.get_data_parallel_rank(),
+        pp_rank,
+        tp_rank,
+        always_enable_tp_seed=args.sequence_parallel,
+    )
 
     def getitem_fn(entry):
         ret = [
             entry["input_ids"],
             entry["attention_mask"],
             # position_ids
-            torch.arange(len(entry["input_ids"])),
+            torch.arange(len(entry["input_ids"]), requires_grad=False),
             entry["labels"],
         ]
         return ret
