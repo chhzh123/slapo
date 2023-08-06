@@ -281,13 +281,25 @@ def generate_pipeline_stages(
     return sch
 
 
-def uniform_checkpoint(sch, num_layers, path="encoder.layer.N", ckpt_ratio=1.0):
+def uniform_checkpoint(
+    sch,
+    num_layers,
+    path="encoder.layer.N",
+    ckpt_ratio=1.0,
+    checkpoint_method="uniform",
+    order_args_fn=None,
+):
     if ckpt_ratio == 0.0:
         return 0
 
     n_ckpt = int(num_layers * ckpt_ratio)
-    for idx in range(n_ckpt):
-        sch[path.replace("N", str(idx))].checkpoint()
+    if checkpoint_method == "uniform":
+        for idx in range(0, num_layers, max(1, int(1 / ckpt_ratio))):
+            sch[path.replace("N", str(idx))].checkpoint(order_args_fn=order_args_fn)
+    else:  # head
+        for idx in range(n_ckpt):
+            sch[path.replace("N", str(idx))].checkpoint(order_args_fn=order_args_fn)
+
     return n_ckpt
 
 
