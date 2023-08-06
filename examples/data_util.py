@@ -40,6 +40,10 @@ def get_dataloader(
         tokenizer = AutoTokenizer.from_pretrained("bert-large-uncased")
         if "xlarge" in model_name:
             tokenizer.model_max_length = 1024
+    elif "roberta" in model_name:
+        tokenizer = AutoTokenizer.from_pretrained("roberta-large")
+        if "xlarge" in model_name:
+            tokenizer.model_max_length = 1024
     elif "gpt" in model_name:
         tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neo-1.3B")
     elif "llama" in model_name:
