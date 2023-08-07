@@ -143,8 +143,8 @@ def plot(file_name):
     )
     plt.show()
     speedup_bert = all_data[0]["slapo-megatron"] / all_data[0]["megatron"]
-    speedup_gpt = all_data[3]["slapo-megatron"] / all_data[3]["megatron"]
-    speedup_t5 = all_data[5]["slapo-megatron"] / all_data[5]["megatron"]
+    speedup_gpt = all_data[2]["slapo-megatron"] / all_data[2]["megatron"]
+    speedup_t5 = all_data[4]["slapo-megatron"] / all_data[4]["megatron"]
     print("BERT speedup vs Megatron: ", speedup_bert)
     print("GPT speedup vs Megatron: ", speedup_gpt)
     print("T5 speedup vs Megatron:", speedup_t5)
