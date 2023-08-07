@@ -142,6 +142,7 @@ def train(args):
         )
         model = model.to(device)
     report_memory(msg="After building model")
+    logger.info(model, ranks=0)
 
     seq_length = args.seq_len
     input_ids = torch.ones(

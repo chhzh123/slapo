@@ -78,7 +78,7 @@ def _apply_schedule(
                 sch[f"decoder.layers.{idx}.self_attn"],
                 names=["q_proj", "k_proj", "v_proj", "out_proj"],
                 # Split along the num_heads dimension
-                attrs=["num_attention_heads", "embed_dim"],
+                attrs=["num_heads", "embed_dim"],
                 backward=True,
                 use_kwargs=True,
             )
@@ -165,7 +165,6 @@ def _apply_schedule(
 def find_opt_attention(sch):
     subgraph = []
     flag = False
-    print(sch.mod.graph)
     for node in sch.mod.graph.nodes:
         # Start capturing subgraph
         # %view_3 : [#users=1] = call_method[target=view](args = (%contiguous_2, %mul_1, -1, 80), kwargs = {})
@@ -176,8 +175,8 @@ def find_opt_attention(sch):
         if (
             node.op == "call_method"
             and node.target == "view"
-            and node.args[0].op == "call_module"
-            and node.args[0].target == "k_proj"
+            and node.args[0].op == "call_method"
+            and node.args[0].target == "contiguous"
         ):
             flag = True
         if flag:
@@ -191,45 +190,30 @@ def find_opt_attention(sch):
             and node.args[0].op == "call_function"
         ):
             flag = False
-        if node.op == "output":
-            node.args = tuple(((node.args[0][0], None, None),))
-    sch.mod.graph.lint()
-    sch.mod.recompile()
-    subgraph.remove(subgraph[3])
     return [subgraph]
 
 
 def replace_sdp(sch, config, subgraphs=None, mask=False, dropout=0.0):
+    if subgraphs is None:
+
+        def scaled_dot_product(query_layer, key_layer, value_layer):
+            attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+            attention_scores = attention_scores / math.sqrt(
+                config.hidden_size // config.num_attention_heads
+            )
+            attention_probs = F.softmax(attention_scores, dim=-1)
+            attention_probs = F.dropout(attention_probs)
+            context_layer = torch.matmul(attention_probs, value_layer)
+            return context_layer
+
+        pattern = scaled_dot_product
+        subgraphs = sch.find(pattern)
     assert len(subgraphs) > 0
 
-    from slapo.op import FlashAttentionOp
-
     class EfficientAttention(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.op = FlashAttentionOp("cuda", False)
-
         def forward(
-            self,
-            key_layer,
-            getitem,
-            value_layer,
-            query_layer,
-            getitem_1,
-            attention_mask,
+            self, query_layer, mul, key_layer, value_layer, bs, tgt_len, attention_mask
         ):
-            bsz, seq_len = key_layer.size(0), key_layer.size(1)
-            shape = bsz, seq_len, config.num_attention_heads // sch.world_size, -1
-            key_layer.view(shape)
-            value_layer.view(shape)
-            query_layer.view(shape)
-            return self.op(
-                query_layer,
-                key_layer,
-                value_layer,
-                attention_mask,
-                dropout,
-            )
             return F.scaled_dot_product_attention(
                 query_layer,
                 key_layer,
@@ -239,7 +223,6 @@ def replace_sdp(sch, config, subgraphs=None, mask=False, dropout=0.0):
             )
 
     sch.replace(EfficientAttention(), subgraphs)
-    print(sch.mod)
 
 
 def checkpoint(
