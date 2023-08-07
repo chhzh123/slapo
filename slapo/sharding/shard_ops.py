@@ -660,3 +660,24 @@ class ShardBatchNorm2d(ShardMethod):
         if axis != 0:
             raise ValueError("BatchNorm2d only supports sharding on axis 0")
         return ("partition", 1)
+
+
+@register_shard_method(nn.Embedding)
+class ShardEmbedding(ShardMethod):
+    """Sharding methods for BatchNorm2d layer.
+    It adjusts the feature number to reflect the shard size,
+    and returns the output type (partition along axis=1).
+    """
+
+    @staticmethod
+    def postproc(sch, param_name, sharded_size, axis):
+        if axis == 0:
+            sch.mod.num_embeddings = sharded_size
+            return
+        sch.mod.embedding_dim = sharded_size
+
+    @staticmethod
+    def infer_output_type(sch, param_name, sharded_size, axis):
+        if axis == 0:
+            return ("partition", 0)
+        return ("partial", None)
