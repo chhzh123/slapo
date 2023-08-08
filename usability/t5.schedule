@@ -1,0 +1,13 @@
+shard_embedding()
+for mod in [encoder, decoder, endec]:
+    shard_attention()
+    shard_position_bias()
+    trace_attention()
+    subgraphs = sch.find(scaled_dot_product)
+    sch.replace(EfficientAttention(), subgraphs)
+for mod in [encoder, decoder]:
+    shard_mlp()
+subsch["attention.output.dense"].decompose()
+subgraph = sch.find(lambda x, bias: F.relu(bias + x))
+sch.fuse(subgraph, compiler="TorchInductor", name="BiasReLU")
+sch[path.replace("N", str(idx))].checkpoint()
