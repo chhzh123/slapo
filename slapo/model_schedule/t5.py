@@ -81,6 +81,7 @@ def _apply_schedule(
                 names=["wi", "wo"],
                 backward=True,
             )
+            # no mlp bias, so no need to fuse
         # Decoder
         optimize_attention(
             sch[f"decoder.block.{idx}.layer.0.SelfAttention"], model_config
@@ -96,6 +97,7 @@ def _apply_schedule(
                 names=["wi", "wo"],
                 backward=True,
             )
+            # no mlp bias, so no need to fuse
     logger.info("Shard %d attention layers", model_config.num_layers, ranks=0)
 
     if sch.world_size > 1 and sch_config.get("bcast_input", False):

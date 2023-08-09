@@ -38,6 +38,12 @@ def draw_bar(
         bars.append(ax.bar(x + interval[i] * width, data[key], width * 2, **kwargs))
     ax.set_xticks(x)
     ax.set_xticklabels(x_ticklabels)
+    if "WideResNet" in title:
+        ax.set_ylim(top=275)
+    elif "GPT" in title:
+        ax.set_ylim(top=21)
+    elif "OPT" in title:
+        ax.set_ylim(top=25)
     if x_label is not None:
         ax.set_xlabel(x_label)
     if y_label is not None:
@@ -74,12 +80,12 @@ def plot(file_name):
             lines.append(line.strip().split(","))
         results = pd.DataFrame(lines, columns=headers)
     model_name_mapping = {
-        "BERT": "bert-xlarge",
-        "RoBERTa": "roberta-xlarge",
-        "GPT": "gpt-neo-2.7b",
-        "OPT": "opt-2.7b",
-        "T5": "t5-3b",
-        "WideResNet": "wideresnet-2.4b",
+        "BERT-1B": "bert-xlarge",
+        "RoBERTa-1.3B": "roberta-xlarge",
+        "GPT-2.9B": "gpt-neo-2.7b",
+        "OPT-2.7B": "opt-2.7b",
+        "T5-2.9B": "t5-3b",
+        "WideResNet-2.4B": "wideresnet-2.4b",
     }
     legend_name_mapping = {
         "megatron": "Megatron-LM",
@@ -143,8 +149,8 @@ def plot(file_name):
     )
     plt.show()
     speedup_bert = all_data[0]["slapo-megatron"] / all_data[0]["megatron"]
-    speedup_gpt = all_data[3]["slapo-megatron"] / all_data[3]["megatron"]
-    speedup_t5 = all_data[5]["slapo-megatron"] / all_data[5]["megatron"]
+    speedup_gpt = all_data[2]["slapo-megatron"] / all_data[2]["megatron"]
+    speedup_t5 = all_data[4]["slapo-megatron"] / all_data[4]["megatron"]
     print("BERT speedup vs Megatron: ", speedup_bert)
     print("GPT speedup vs Megatron: ", speedup_gpt)
     print("T5 speedup vs Megatron:", speedup_t5)

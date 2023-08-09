@@ -36,7 +36,7 @@ while IFS= read -r line || [[ -n $line ]]; do
     BATCH_SIZE=${line_array[5]}
     CKPT=${line_array[6]}
 
-    echo "=== ${MODE} ${MODEL} ==="
+    echo "=== ${MODE} ${MODEL} (GPUs: ${GPUS}, BS: ${BATCH_SIZE} CKPT: ${CKPT}) ==="
     python3 bench_single_node.py ${MODE} --append-to "$RESULT_FILE" \
         --model ${MODEL} --gpus ${GPUS} --seq-len ${SEQ_LEN} \
         --seq-len-dec ${DEC_SEQ_LEN} \

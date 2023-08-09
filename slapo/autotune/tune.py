@@ -310,11 +310,52 @@ def tune(args, get_bs_range, eval_fn):
         logger.info("Binary searching %s without OOM", key)
         if rt is None:
             rt = len(data) - 1
+        in_thrpt = 0.0
+        mid = (lt + rt) // 2
         while lt <= rt:
             mid = (lt + rt) // 2
             cfg_dict[key] = data[mid]
             logger.info("- Evaluating %s", str(cfg_dict))
             # early pruning
+            if is_valid(cfg_dict):
+                in_thrpt = eval_fn(cfg_dict)
+            else:
+                in_thrpt = 0.0
+                logger.info(
+                    "Invalid configuration point %s, n_gpu=%s",
+                    str(cfg_dict),
+                    training_script_args["gpus"],
+                )
+            time.sleep(0.5)
+            logger.info("\tThroughput: %.2f", in_thrpt)
+            # TODO: threshold should be a larger value used for pruning
+            # maybe provide an interface for the users
+            if in_thrpt < 0.01:
+                rt = mid - 1
+            else:
+                lt = mid + 1
+            if in_thrpt > curr_best[1]:
+                curr_best = (cfg_dict.copy(), in_thrpt)
+                early_stopping_patience = 0
+            else:
+                early_stopping_patience += 1
+            # set step 5 as the patience
+            if early_stopping_patience >= 5:
+                return mid, None, curr_best
+            logger.info(
+                "\tCurrent best config: %s, in_thrpt: %.2f",
+                str(curr_best[0]),
+                curr_best[1],
+            )
+        if in_thrpt < 0.01:
+            mid = mid - 1
+        return mid, in_thrpt, curr_best
+
+    def exhausted_search(data_range, cfg_dict, key, curr_best):
+        logger.info("Binary searching %s without OOM", key)
+        for data in data_range:
+            cfg_dict[key] = data
+            logger.info("- Evaluating %s", str(cfg_dict))
             if is_valid(cfg_dict):
                 thrpt = eval_fn(cfg_dict)
             else:
@@ -326,28 +367,13 @@ def tune(args, get_bs_range, eval_fn):
                 )
             time.sleep(0.5)
             logger.info("\tThroughput: %.2f", thrpt)
-            # TODO: threshold should be a larger value used for pruning
-            # maybe provide an interface for the users
-            if thrpt < 0.01:
-                rt = mid - 1
-            else:
-                lt = mid + 1
             if thrpt > curr_best[1]:
                 curr_best = (cfg_dict.copy(), thrpt)
-                early_stopping_patience = 0
-            else:
-                early_stopping_patience += 1
-            # set step 5 as the patience
-            if early_stopping_patience > 10:
-                return mid, None, curr_best
             logger.info(
                 "\tCurrent best config: %s, thrpt: %.2f",
                 str(curr_best[0]),
                 curr_best[1],
             )
-        if thrpt < 0.01:
-            mid = mid - 1
-        return mid, thrpt, curr_best
 
     def _run(min_bs, max_bs, step):
         if "megatron" in training_script_args:
@@ -380,6 +406,7 @@ def tune(args, get_bs_range, eval_fn):
                 )
                 if thrpt is None:  # early stopping
                     break
+                # exhausted_search(ckpt_ratio_range, cfg_dict, "ckpt_ratio", curr_best)
         return curr_best
 
     logger.info("Start tuning...")

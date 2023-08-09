@@ -74,8 +74,6 @@ def train(args):
             num_mp = args.tmp
         else:
             logger.info("Pipeline disabled", ranks=0)
-            num_pp = 1
-            num_mp = args.tmp
 
         topology, group = create_dist_group_for_pipeline(num_pp, num_mp)
 
