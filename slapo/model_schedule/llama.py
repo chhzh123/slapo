@@ -85,8 +85,8 @@ def replace_rotary_pos_emb(sch, name="apply_rotary_pos_emb"):
     class JitApplyRotary(nn.Module):
         def __init__(self):
             super().__init__()
-            # self.apply_rotary_emb = torch.jit.script(apply_rotary_pos_emb)
-            self.apply_rotary_emb = torch.compile(apply_rotary_pos_emb)
+            self.apply_rotary_emb = torch.jit.script(apply_rotary_pos_emb)
+            # self.apply_rotary_emb = torch.compile(apply_rotary_pos_emb)
 
         def forward(self, query_states, key_states, cos, sin, position_ids):
             return self.apply_rotary_emb(
@@ -147,7 +147,11 @@ def _apply_schedule(
             model_config.vocab_size,
             word_embed_name="embed_tokens",
         )
-        # TODO: shard output embedding
+        # shard output embedding
+        # if hasattr(orig_sch.mod, "lm_head"):
+        orig_sch["lm_head"].shard("weight", axis=0)  # transposed
+        orig_sch["lm_head"].sync(mode="bwd_post", sync_op_or_fn="all_reduce")
+        logger.info("Shard output embedding", ranks=0)
         for idx in range(model_config.num_hidden_layers):
             shard_attention(
                 sch[f"layers.{idx}.self_attn"],
@@ -195,7 +199,7 @@ def _apply_schedule(
             model_config.num_hidden_layers,
             path="layers.N",
             ckpt_ratio=ckpt_ratio,
-            checkpoint_method="head",
+            checkpoint_method="uniform",
         )
         logger.info("Checkpointed %d layers", n_ckpt, ranks=0)
 

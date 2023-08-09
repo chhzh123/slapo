@@ -74,6 +74,8 @@ def train(args):
             num_mp = args.tmp
         else:
             logger.info("Pipeline disabled", ranks=0)
+            num_pp = 1
+            num_mp = args.tmp
 
         topology, group = create_dist_group_for_pipeline(num_pp, num_mp)
 
@@ -130,10 +132,11 @@ def train(args):
             group=group,
             pipeline_cuts=pipeline_cuts,
             delay_init=enable_pipeline,
-            disable_fusion=False, #not enable_pipeline,
+            disable_fusion=not enable_pipeline,
             sequence_parallel=args.sequence_parallel,
             checkpoint_method=args.checkpoint_method,
         )
+        logger.info("sch.mod %s" % sch.mod, ranks=0)
     tp_rank = sch.rank
 
     loss_fct = ParallelCrossEntropy(group=group)
