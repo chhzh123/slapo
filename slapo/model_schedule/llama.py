@@ -147,6 +147,7 @@ def _apply_schedule(
             model_config.vocab_size,
             word_embed_name="embed_tokens",
         )
+        # TODO: shard output embedding
         for idx in range(model_config.num_hidden_layers):
             shard_attention(
                 sch[f"layers.{idx}.self_attn"],
@@ -190,7 +191,11 @@ def _apply_schedule(
     if ckpt_ratio > 0.0:
         logger.info("Checkpoint ratio: %.2f", ckpt_ratio, ranks=0)
         n_ckpt = uniform_checkpoint(
-            sch, model_config.num_hidden_layers, path="layers.N", ckpt_ratio=ckpt_ratio
+            sch,
+            model_config.num_hidden_layers,
+            path="layers.N",
+            ckpt_ratio=ckpt_ratio,
+            checkpoint_method="head",
         )
         logger.info("Checkpointed %d layers", n_ckpt, ranks=0)
 

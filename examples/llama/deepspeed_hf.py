@@ -74,8 +74,6 @@ def train(args):
             num_mp = args.tmp
         else:
             logger.info("Pipeline disabled", ranks=0)
-            num_pp = 1
-            num_mp = args.tmp
 
         topology, group = create_dist_group_for_pipeline(num_pp, num_mp)
 
@@ -176,7 +174,6 @@ def train(args):
             loss_fn=loss_fn,
             init_weights=model._init_weights,
         )
-        logger.info(model, ranks=0)
     else:
         if batch_size is not None and micro_batch_size is None:
             micro_batch_size = batch_size // args.world_size
@@ -203,6 +200,7 @@ def train(args):
         )
         model = model.to(device)
     report_memory(msg="After building model")
+    logger.info(model, ranks=0)
 
     pp_rank = None if args.disable_pipeline else model.mpu.get_pipe_parallel_rank()
     set_random_seed(
