@@ -102,7 +102,7 @@ def train(args):
     logger.info(config, ranks=[0])
 
     report_memory(msg="Before creating model")
-    with slapo.init_empty_weights(enable=enable_pipeline):
+    with slapo.init_empty_weights():
         model = LlamaForCausalLM(config)
     report_memory(msg="After creating model")
 
@@ -132,7 +132,7 @@ def train(args):
             group=group,
             pipeline_cuts=pipeline_cuts,
             delay_init=enable_pipeline,
-            disable_fusion=not enable_pipeline,
+            disable_fusion=True,#not enable_pipeline,
             sequence_parallel=args.sequence_parallel,
             checkpoint_method=args.checkpoint_method,
         )
@@ -226,8 +226,11 @@ def train(args):
 
     def collate_fn(batch, enable_pipeline=False):
         input_ids = torch.tensor([x[0] for x in batch], dtype=torch.long)
-        attention_mask = torch.tensor([x[1] for x in batch], dtype=torch.float16)
+        attention_mask = torch.tensor(
+            [x[1] for x in batch], dtype=torch.float16, requires_grad=False
+        )
         position_ids = torch.stack([x[2] for x in batch])
+        position_ids.requires_grad = False
         labels = torch.tensor([x[3] for x in batch], dtype=torch.long)
 
         ret = [input_ids, attention_mask, position_ids, labels]
@@ -345,7 +348,7 @@ if __name__ == "__main__":
         "--num-attn-heads", type=int, default=-1, help="Number of attention heads"
     )
     parser.add_argument(
-        "--dropout", type=float, default=0.0, help="Dropout probability"
+        "--dropout", type=float, default=0.1, help="Dropout probability"
     )
     parser.add_argument(
         "--pmp", type=int, default=2, help="Pipeline model parallel size"
