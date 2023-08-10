@@ -7,13 +7,13 @@ models = ["bert", "roberta", "gpt", "opt", "t5", "wideresnet"]
 impls = ["slapo-megatron"]
 
 model_name_mapping = {
-    "bert": "bert-large-uncased",
-    "roberta": "roberta-large",
+    "bert": "bert-xlarge",
+    "roberta": "roberta-xlarge",
     "albert": "albert-large-v2",
-    "gpt": "EleutherAI/gpt-neo-125M",
-    "opt": "facebook/opt-350m",
-    "t5": "t5-base",
-    "wideresnet": "wideresnet-250M",
+    "gpt_neo": "EleutherAI/gpt-neo-2.7B",
+    "opt": "facebook/opt-2.7b",
+    "t5": "t5-3b",
+    "wideresnet": "wideresnet-2.4B",
 }
 
 for model in models:
