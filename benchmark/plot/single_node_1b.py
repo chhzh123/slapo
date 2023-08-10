@@ -89,9 +89,9 @@ def plot(file_name):
     }
     legend_name_mapping = {
         "megatron": "Megatron-LM",
-        "slapo-megatron": "Slapo-TP",
+        "slapo-megatron": "Epos-TP",
         "deepspeed": "DeepSpeed",
-        "slapo-deepspeed": "Slapo-ZeRO3",
+        "slapo-deepspeed": "Epos-ZeRO3",
     }
     fig, axs = plt.subplots(2, 3, figsize=(9, 4.5))
     all_data = []
@@ -157,6 +157,12 @@ def plot(file_name):
     for i, (model, long_name) in enumerate(model_name_mapping.items()):
         speedup_ds = all_data[i]["slapo-deepspeed"] / all_data[i]["deepspeed"]
         print(f"{model} speedup vs DS: ", speedup_ds)
+    for i, (model, long_name) in enumerate(model_name_mapping.items()):
+        speedup = all_data[i]["slapo-deepspeed"] / all_data[i]["megatron"]
+        print(f"{model} speedup vs Megatron: ", speedup)
+    for i, (model, long_name) in enumerate(model_name_mapping.items()):
+        speedup = all_data[i]["slapo-megatron"] / all_data[i]["deepspeed"]
+        print(f"{model} speedup vs DeepSpeed: ", speedup)
 
 
 if __name__ == "__main__":
