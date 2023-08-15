@@ -59,6 +59,8 @@ def train(args):
     torch.cuda.set_device(rank)
 
     # Configurations.
+    if args.pmp == 1:
+        args.disable_pipeline = True
     enable_pipeline = not SINGLE_DEVICE_FOR_DEBUG and not args.disable_pipeline
     if args.disable_schedule and args.checkpoint not in [0.0, 1.0]:
         raise ValueError("checkpoint must be 0.0 or 1.0 with disable_schedule")
@@ -132,7 +134,7 @@ def train(args):
             group=group,
             pipeline_cuts=pipeline_cuts,
             delay_init=enable_pipeline,
-            disable_fusion=True,#not enable_pipeline,
+            disable_fusion=(not enable_pipeline and args.tmp == 1),
             sequence_parallel=args.sequence_parallel,
             checkpoint_method=args.checkpoint_method,
         )
