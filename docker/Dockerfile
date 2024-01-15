@@ -113,10 +113,10 @@ RUN pip3 install ipython
 ##############################################################################
 # EFA Setup
 ##############################################################################
-RUN cd ${STAGE_DIR} && curl -O https://efa-installer.amazonaws.com/aws-efa-installer-1.17.2.tar.gz && \
-    tar -xf aws-efa-installer-1.17.2.tar.gz && \
-    cd aws-efa-installer && \
-    ./efa_installer.sh -y -d -g  --skip-kmod --skip-limit-conf --no-verify
+# RUN cd ${STAGE_DIR} && curl -O https://efa-installer.amazonaws.com/aws-efa-installer-1.17.2.tar.gz && \
+#     tar -xf aws-efa-installer-1.17.2.tar.gz && \
+#     cd aws-efa-installer && \
+#     ./efa_installer.sh -y -d -g  --skip-kmod --skip-limit-conf --no-verify
 
 
 ##############################################################################
@@ -150,13 +150,11 @@ RUN pip3 install psutil \
                  sphinx_rtd_theme \
                  scipy \
                  numpy \
-                 sklearn \
                  networkx \
                  scikit-learn \
                  nvidia-ml-py3 \
                  mpi4py \ 
-                 cupy-cuda117 \
-                 supervisor awscli
+                 cupy-cuda117
 
 
 
@@ -186,24 +184,25 @@ RUN cd ${STAGE_DIR} && \
 ##############################################################################
 # Install AWS-OFI-NCCL plugin
 ##############################################################################
-RUN git clone https://github.com/aws/aws-ofi-nccl.git $STAGE_DIR/aws-ofi-nccl \
-    && cd $STAGE_DIR/aws-ofi-nccl \
-    && git checkout aws  \
-    && ./autogen.sh \
-    && ./configure --prefix=$STAGE_DIR/aws-ofi-nccl/install \
-       --with-libfabric=/opt/amazon/efa/ \
-       --with-cuda=/usr/local/cuda \
-       --with-mpi=/opt/amazon/openmpi/ \
-       --with-nccl=/usr/lib/x86_64-linux-gnu \
-    && make -j$(nproc) && make install
+# RUN git clone https://github.com/aws/aws-ofi-nccl.git $STAGE_DIR/aws-ofi-nccl \
+#     && cd $STAGE_DIR/aws-ofi-nccl \
+#     && git checkout aws  \
+#     && ./autogen.sh \
+#     && ./configure --prefix=$STAGE_DIR/aws-ofi-nccl/install \
+#        --with-libfabric=/opt/amazon/efa/ \
+#        --with-cuda=/usr/local/cuda \
+#        --with-mpi=/opt/amazon/openmpi/ \
+#        --with-nccl=/usr/lib/x86_64-linux-gnu \
+#     && make -j$(nproc) && make install
 
 ENV PATH=$PATH:/home/deepspeed/.local/bin
 RUN echo "export PATH=$PATH:/home/deepspeed/.local/bin" >> /home/deepspeed/.bashrc
 RUN hash -r
 RUN pip3 install ninja pybind11 pyyaml mkl mkl-include cffi typing_extensions future six requests dataclasses h5py pytest-cov tensorboardX
 # Extra installation
-RUN pip3 install sentencepiece
+RUN pip3 install sentencepiece datasets tabulate
 RUN pip3 install -U pytest-cov setuptools py-cpuinfo
+RUN sudo apt-get install ninja-build
 
 ##############################################################################
 # PyTorch
@@ -221,6 +220,7 @@ RUN pip3 install --no-deps pytorch-ignite
 USER deepspeed
 RUN cd ${STAGE_DIR} && git clone https://github.com/NVIDIA/apex && \
     cd apex && \
+    git checkout 0da3ffb && \
     TORCH_CUDA_ARCH_LIST="7.0 7.5 8.0" \
     pip3 install -v --disable-pip-version-check \
     --no-cache-dir --global-option="--cpp_ext" \
@@ -242,15 +242,23 @@ RUN cd ${STAGE_DIR}/DeepSpeed && \
 USER deepspeed
 
 # install nccl-tests
+RUN sudo apt install -y libopenmpi-dev
 RUN git clone https://github.com/NVIDIA/nccl-tests.git $HOME/nccl-tests
 RUN cd $HOME/nccl-tests \
-    && make MPI=1 MPI_HOME=/opt/amazon/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/lib/x86_64-linux-gnu 
+    && make CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/lib/x86_64-linux-gnu 
 
 # Install Megatron-LM to $HOME
 RUN pip3 install regex pynvml
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git $HOME/Megatron-LM
 RUN cd $HOME/Megatron-LM && git checkout 0bb597b
 ENV PYTHONPATH "${PYTHONPATH}:$HOME/Megatron-LM"
+COPY scripts/megatron_patch $HOME/Megatron-LM
+RUN MEGATRON_PATH=$HOME/Megatron-LM && \
+   cd $MEGATRON_PATH && \
+   git config --global --add safe.directory $MEGATRON_PATH && \
+   git reset --hard && \
+   git apply megatron_patch && \
+   git --no-pager diff
 
 RUN pip3 install --no-deps triton==2.0.0.dev20221202 
 
@@ -262,25 +270,38 @@ RUN cd $HOME/xformers && \
     export FORCE_CUDA="1" && \
     export TORCH_CUDA_ARCH_LIST="7.0 7.5 8.0" && \
     CUDA_VISIBLE_DEVICES=0 pip3 install -e ".[dev]"
+COPY scripts/xformers_patch $HOME/xformers
+RUN XFORMER_PATH=$HOME/xformers && \
+   cd $XFORMER_PATH && \
+   git config --global --add safe.directory $XFORMER_PATH && \
+   git reset --hard && \
+   git apply xformers_patch && \
+   git --no-pager diff
 
 # Install flash_attn
 RUN git clone https://github.com/jfc4050/flash-attention.git $HOME/flash-attention && \
-    cd $HOME/flash-attention/ && git checkout 7b46e1
+    cd $HOME/flash-attention/ && git checkout 3676bd2
 RUN cd $HOME/flash-attention/ && \
     pip3 install -e ".[dev]"
 
-# Install transformers
-RUN pip install transformers==4.28.1 --no-deps
+# Install transformers==4.28.1
+RUN git clone https://github.com/chhzh123/transformers.git $HOME/transformers && \
+   cd $HOME/transformers && git checkout slapo && pip3 install -e .
 
-COPY container_entrypoint.sh /etc/
+COPY docker/container_entrypoint.sh /etc/
 RUN sudo chown $USER:$USER /etc/container_entrypoint.sh
 RUN chmod 777 /etc/container_entrypoint.sh
 # ENTRYPOINT /etc/container_entrypoint.sh
 
 # AWS Batch setup for CI
-COPY batch_entry.sh /batch/entry.sh
-RUN DEBIAN_FRONTEND=noninteractive sudo apt-get install -y awscli
-RUN python3 -m pip install --upgrade awscli
+# COPY docker/batch_entry.sh /batch/entry.sh
+# RUN DEBIAN_FRONTEND=noninteractive sudo apt-get install -y awscli
+# RUN python3 -m pip install --upgrade awscli
+
+# Install Slapo
+RUN git clone https://github.com/chhzh123/slapo.git $HOME/slapo && \
+   cd $HOME/slapo && git checkout asplos24 && pip3 install -e ."[dev]"
+RUN cd $HOME/slapo/benchmark && bash download_benchmark_dataset.sh
 
 EXPOSE 2345
 EXPOSE 2555

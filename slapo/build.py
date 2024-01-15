@@ -302,12 +302,12 @@ def build(
     # delay initialization
     if init_weights:
         init_weight_fn = init_weights if isinstance(init_weights, Callable) else None
-        if sch.world_size == 1:
-            import deepspeed
-            context_manager = deepspeed.zero.Init(dtype=sch.mod.dtype)
-        else:
-            from contextlib import nullcontext
-            context_manager = nullcontext()
+        # if sch.world_size == 1:
+        #     import deepspeed
+        #     context_manager = deepspeed.zero.Init(dtype=sch.mod.dtype)
+        # else:
+        from contextlib import nullcontext
+        context_manager = nullcontext()
 
         with context_manager:
             sch = consolidate_model(sch, target, init_weight_fn, **kwargs)

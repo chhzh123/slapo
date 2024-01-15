@@ -82,16 +82,16 @@ def plot(file_name):
     model_name_mapping = {
         "BERT-1B": "bert-xlarge",
         "RoBERTa-1.3B": "roberta-xlarge",
-        "GPT-2.9B": "gpt-neo-2.7b",
-        "OPT-2.7B": "opt-2.7b",
+        "GPT-2.9B": "EleutherAI/gpt-neo-2.7B",
+        "OPT-2.7B": "facebook/opt-2.7b",
         "T5-2.9B": "t5-3b",
-        "WideResNet-2.4B": "wideresnet-2.4b",
+        "WideResNet-2.4B": "wideresnet-2.4B",
     }
     legend_name_mapping = {
         "megatron": "Megatron-LM",
-        "slapo-megatron": "Epos-TP",
+        "slapo-megatron": "Slapo-TP",
         "deepspeed": "DeepSpeed",
-        "slapo-deepspeed": "Epos-ZeRO3",
+        "slapo-deepspeed": "Slapo-ZeRO3",
     }
     fig, axs = plt.subplots(2, 3, figsize=(9, 4.5))
     all_data = []
