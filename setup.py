@@ -128,7 +128,7 @@ def setup():
         long_description_content_type="text/markdown",
         setup_requires=[],
         install_requires=[
-            "z3-solver",
+            "mock",
             "tabulate",
             "packaging",
             "psutil",

@@ -248,17 +248,11 @@ RUN cd $HOME/nccl-tests \
     && make CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/lib/x86_64-linux-gnu 
 
 # Install Megatron-LM to $HOME
+# The patched version supports PyTorch 2.0 and adds positional embedding to T5 model
 RUN pip3 install regex pynvml
-RUN git clone https://github.com/NVIDIA/Megatron-LM.git $HOME/Megatron-LM
-RUN cd $HOME/Megatron-LM && git checkout 0bb597b
+RUN git clone https://github.com/chhzh123/Megatron-LM.git $HOME/Megatron-LM
+RUN cd $HOME/Megatron-LM && git checkout slapo
 ENV PYTHONPATH "${PYTHONPATH}:$HOME/Megatron-LM"
-COPY scripts/megatron_patch $HOME/Megatron-LM
-RUN MEGATRON_PATH=$HOME/Megatron-LM && \
-   cd $MEGATRON_PATH && \
-   git config --global --add safe.directory $MEGATRON_PATH && \
-   git reset --hard && \
-   git apply megatron_patch && \
-   git --no-pager diff
 
 RUN pip3 install --no-deps triton==2.0.0.dev20221202 
 

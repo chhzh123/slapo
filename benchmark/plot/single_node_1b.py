@@ -155,14 +155,17 @@ def plot(file_name):
     print("GPT speedup vs Megatron: ", speedup_gpt)
     print("T5 speedup vs Megatron:", speedup_t5)
     for i, (model, long_name) in enumerate(model_name_mapping.items()):
-        speedup_ds = all_data[i]["slapo-deepspeed"] / all_data[i]["deepspeed"]
-        print(f"{model} speedup vs DS: ", speedup_ds)
-    for i, (model, long_name) in enumerate(model_name_mapping.items()):
-        speedup = all_data[i]["slapo-deepspeed"] / all_data[i]["megatron"]
-        print(f"{model} speedup vs Megatron: ", speedup)
+        speedup = all_data[i]["slapo-megatron"] / all_data[i]["megatron"]
+        print(f"{model} Slapo-TP speedup vs Megatron: ", speedup)
     for i, (model, long_name) in enumerate(model_name_mapping.items()):
         speedup = all_data[i]["slapo-megatron"] / all_data[i]["deepspeed"]
-        print(f"{model} speedup vs DeepSpeed: ", speedup)
+        print(f"{model} Slapo-TP speedup vs DeepSpeed: ", speedup)
+    for i, (model, long_name) in enumerate(model_name_mapping.items()):
+        speedup = all_data[i]["slapo-deepspeed"] / all_data[i]["megatron"]
+        print(f"{model} Slapo-DS speedup vs Megatron: ", speedup)
+    for i, (model, long_name) in enumerate(model_name_mapping.items()):
+        speedup_ds = all_data[i]["slapo-deepspeed"] / all_data[i]["deepspeed"]
+        print(f"{model} Slapo-DS speedup vs DS: ", speedup_ds)
 
 
 if __name__ == "__main__":
