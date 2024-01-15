@@ -5,7 +5,9 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib
 
+matplotlib.rc('pdf', fonttype=42)
 
 def plot(file_name):
     with open(file_name, "r") as csv_file:

@@ -5,10 +5,9 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib
 
-# import seaborn as sns
-# sns.set_theme(context="paper", style="whitegrid", palette=sns.color_palette("Set3", 10))
-
+matplotlib.rc('pdf', fonttype=42)
 
 def draw_bar(
     data,
@@ -80,7 +79,7 @@ def plot(file_name):
     legend_name_mapping = {
         "megatron": "Megatron-LM",
         "deepspeed": "DeepSpeed",
-        "slapo": "Epos",
+        "slapo": "Slapo",
     }
     fig, axs = plt.subplots(2, 1, figsize=(3, 4.5))
     all_data = []
