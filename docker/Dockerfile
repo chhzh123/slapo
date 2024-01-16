@@ -297,6 +297,9 @@ RUN git clone https://github.com/chhzh123/slapo.git $HOME/slapo && \
    cd $HOME/slapo && git checkout asplos24 && pip3 install -e ."[dev]"
 RUN cd $HOME/slapo/benchmark && bash download_benchmark_dataset.sh
 
+RUN cd $HOME/Megatron-LM && git pull
+RUN cd $HOME/slapo && git pull
+
 EXPOSE 2345
 EXPOSE 2555
 EXPOSE 2022
