@@ -69,7 +69,7 @@ def _apply_schedule(
         # This is not required when running on Megatron.
         logger.info("Broadcast input to all devices", ranks=0)
         broadcast_input(sch)
-    return sch
+
     # Insert activation checkpoints.
     ckpt_ratio = sch_config.get("ckpt_ratio", 0.0)
     if ckpt_ratio > 0.0:

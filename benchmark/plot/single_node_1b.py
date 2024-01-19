@@ -73,10 +73,10 @@ def plot(file_name):
         for line in csv_file:
             if "Impl" in line:
                 break
-        headers = line.strip().split(",")
+        headers = line.strip().split("\t")
         lines = []
         for line in csv_file.readlines():
-            lines.append(line.strip().split(","))
+            lines.append(line.strip().split("\t"))
         results = pd.DataFrame(lines, columns=headers)
     model_name_mapping = {
         "BERT-1B": "bert-xlarge",
