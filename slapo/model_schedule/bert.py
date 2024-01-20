@@ -65,11 +65,12 @@ def _apply_schedule(
 
     # Shard parameters if MP group > 1.
     if sch.world_size > 1:
-        shard_word_embedding(
-            sch,
-            model_config.vocab_size,
-            word_embed_name="embeddings.word_embeddings",
-        )
+        if not sch_config.get("disable_shard_embedding", False):
+            shard_word_embedding(
+                sch,
+                model_config.vocab_size,
+                word_embed_name="embeddings.word_embeddings",
+            )
         for idx in range(model_config.num_hidden_layers):
             shard_attention(
                 sch[f"encoder.layer.{idx}.attention"],
