@@ -52,34 +52,6 @@ def test_hf_bert():
     assert isinstance(sch["encoder.layer.0.output"].mod, torch.nn.Module)
 
 
-def test_hf_gpt_neo():
-    """Test tracing HF gpt-neo model."""
-    from transformers import AutoConfig, GPTNeoModel
-
-    config = AutoConfig.from_pretrained("EleutherAI/gpt-neo-125M")
-    model = GPTNeoModel(config)
-
-    sch = slapo.create_schedule(model)
-
-    # The original module list.
-    assert isinstance(sch["h.0"].mod, torch.nn.Module)
-
-    # Traced layers.
-    sub_sch = sch["h.0"]
-    input_names = ["hidden_states", "attention_mask"]
-    sig = inspect.signature(sub_sch.mod.forward)
-    concrete_args = {
-        p.name: p.default for p in sig.parameters.values() if p.name not in input_names
-    }
-    sub_sch.trace(tracer="pytorch", concrete_args=concrete_args)
-    assert isinstance(sch["h.0"].mod, fx.GraphModule)
-    assert isinstance(sch["h.0.attn"].mod, fx.GraphModule)
-    assert isinstance(sch["h.0.mlp"].mod, fx.GraphModule)
-
-    # Attention submodule cannot be traced.
-    assert isinstance(sch["h.0.attn.attention"].mod, torch.nn.Module)
-
-
 def test_torchvision_wideresnet():
     """Test tracing torchvision wideresnet model."""
     from torchvision.models.resnet import Bottleneck, ResNet

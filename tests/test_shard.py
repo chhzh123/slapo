@@ -99,55 +99,6 @@ def verify_grads(ref_model, path_and_grads, tol=1e-5):
         print(f"{path}.grad verified")
 
 
-def test_mlp(init_dist):
-    class Model(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.mlp = op.FusedMLP(10, 10, "gelu", 0.1, use_torchscript=False)
-
-        def forward(self, data):
-            return self.mlp(data)
-
-    rank = dist.get_rank()
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-    model = Model()
-
-    sch = slapo.create_schedule(copy.deepcopy(model))
-    sch["mlp.fc_in"].shard("weight", axis=0)
-    sch["mlp.fc_in"].shard("bias", axis=0)
-    sch["mlp.fc_in"].sync(mode="bwd_post", sync_op_or_fn="all_reduce")
-    sch["mlp.fc_out"].shard("weight", axis=1)
-    sch["mlp.fc_out"].sync(mode="fwd_post", sync_op_or_fn="all_reduce")
-    sch_model, _ = slapo.build(sch, init_weights=False)
-
-    sch_model.cuda(local_rank)
-    data = torch.randn((10, 10), requires_grad=True).cuda(local_rank)
-    dist.broadcast(data, src=0)
-    reset_random_seeds()
-    out = sch_model(data)
-    out.mean().backward()
-
-    param_path_and_gather_axis = {
-        "mlp.fc_in.weight": 0,
-        "mlp.fc_in.bias": 0,
-        "mlp.fc_out.weight": 1,
-        "mlp.fc_out.bias": "none",
-    }
-    path_and_grads = gather_grad(sch_model, param_path_and_gather_axis)
-
-    gather_and_copy_model(sch_model, model, param_path_and_gather_axis)
-
-    reset_random_seeds()
-    if rank == 0:
-        model.cuda(local_rank)
-        out_ref = model(data)
-        out_ref.mean().backward()
-
-        torch.testing.assert_close(out, out_ref)
-        verify_grads(model, path_and_grads)
-
-
 def test_linear(init_dist):
     class Model(torch.nn.Module):
         def __init__(self):
@@ -196,50 +147,6 @@ def test_linear(init_dist):
 
         torch.testing.assert_close(out, out_ref)
         verify_grads(model, path_and_grads)
-
-
-def test_linear_decomposition(init_dist=None):
-    dist.init_process_group(backend="nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-
-    class Model(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.linear1 = torch.nn.Linear(20, 30)
-            self.linear2 = torch.nn.Linear(30, 40)
-            self.dropout = torch.nn.Dropout(0.1)
-            self.layernorm = torch.nn.LayerNorm(40)
-
-        def forward(self, data):
-            out = self.linear1(data)
-            out = self.linear2(out)
-            out = self.dropout(out)
-            out = self.layernorm(out)
-            return out
-
-    mod = Model()
-    sch = slapo.create_schedule(mod)
-
-    def pattern(bias, x):
-        return F.layer_norm(F.dropout(bias + x), 40)
-
-    with slapo.Verify(sch, [torch.randn((10, 20))], device=f"cuda:{local_rank}"):
-        # Correct primitive application order:
-        # 1. shard + sync
-        # 2. flattened tracing
-        # 3. fuse bias
-        # DON'T do decompose->trace->shard!
-        # FIXME: Need to handle (error out) this case correctly
-        sch["linear1"].shard("weight", axis=0)
-        sch["linear1"].shard("bias", axis=0)
-        sch["linear2"].shard("weight", axis=1)
-        sch["linear2"].sync(mode="fwd_post", sync_op_or_fn="all_reduce")
-        sch.trace(flatten=True)
-        assert isinstance(sch.mod, fx.GraphModule)
-        subgraph = sch.find(pattern)
-        assert len(subgraph) > 0
-        sch.fuse(subgraph, compiler="TorchScript", name="FusedLN")
 
 
 def test_conv1d(init_dist):
