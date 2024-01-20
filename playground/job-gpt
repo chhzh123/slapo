@@ -1,9 +1,0 @@
-#!/bin/bash
-#SBATCH -N 1
-#SBATCH -C cpu&gpu
-#SBATCH -G 4
-#SBATCH -q regular
-#SBATCH -t 00:15:00
-#SBATCH -A m4341
-
-torchrun --nproc-per-node=2 test_reshard_gpt.py --p=2
