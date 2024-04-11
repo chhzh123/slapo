@@ -89,9 +89,9 @@ def plot(file_name):
     }
     legend_name_mapping = {
         "megatron": "Megatron-LM",
-        "slapo-megatron": "Epos-TP",
+        "slapo-megatron": "Slapo-TP",
         "deepspeed": "DeepSpeed",
-        "slapo-deepspeed": "Epos-ZeRO3",
+        "slapo-deepspeed": "Slapo-ZeRO3",
     }
     fig, axs = plt.subplots(2, 3, figsize=(9, 4.5))
     all_data = []
