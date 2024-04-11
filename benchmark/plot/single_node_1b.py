@@ -5,10 +5,9 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib
 
-# import seaborn as sns
-# sns.set_theme(context="paper", style="whitegrid", palette=sns.color_palette("Set3", 10))
-
+matplotlib.rc('pdf', fonttype=42)
 
 def draw_bar(
     data,
@@ -74,18 +73,18 @@ def plot(file_name):
         for line in csv_file:
             if "Impl" in line:
                 break
-        headers = line.strip().split(",")
+        headers = line.strip().split("\t")
         lines = []
         for line in csv_file.readlines():
-            lines.append(line.strip().split(","))
+            lines.append(line.strip().split("\t"))
         results = pd.DataFrame(lines, columns=headers)
     model_name_mapping = {
         "BERT-1B": "bert-xlarge",
         "RoBERTa-1.3B": "roberta-xlarge",
-        "GPT-2.9B": "gpt-neo-2.7b",
-        "OPT-2.7B": "opt-2.7b",
+        "GPT-2.9B": "EleutherAI/gpt-neo-2.7B",
+        "OPT-2.7B": "facebook/opt-2.7b",
         "T5-2.9B": "t5-3b",
-        "WideResNet-2.4B": "wideresnet-2.4b",
+        "WideResNet-2.4B": "wideresnet-2.4B",
     }
     legend_name_mapping = {
         "megatron": "Megatron-LM",
@@ -155,14 +154,17 @@ def plot(file_name):
     print("GPT speedup vs Megatron: ", speedup_gpt)
     print("T5 speedup vs Megatron:", speedup_t5)
     for i, (model, long_name) in enumerate(model_name_mapping.items()):
-        speedup_ds = all_data[i]["slapo-deepspeed"] / all_data[i]["deepspeed"]
-        print(f"{model} speedup vs DS: ", speedup_ds)
-    for i, (model, long_name) in enumerate(model_name_mapping.items()):
-        speedup = all_data[i]["slapo-deepspeed"] / all_data[i]["megatron"]
-        print(f"{model} speedup vs Megatron: ", speedup)
+        speedup = all_data[i]["slapo-megatron"] / all_data[i]["megatron"]
+        print(f"{model} Slapo-TP speedup vs Megatron: ", speedup)
     for i, (model, long_name) in enumerate(model_name_mapping.items()):
         speedup = all_data[i]["slapo-megatron"] / all_data[i]["deepspeed"]
-        print(f"{model} speedup vs DeepSpeed: ", speedup)
+        print(f"{model} Slapo-TP speedup vs DeepSpeed: ", speedup)
+    for i, (model, long_name) in enumerate(model_name_mapping.items()):
+        speedup = all_data[i]["slapo-deepspeed"] / all_data[i]["megatron"]
+        print(f"{model} Slapo-DS speedup vs Megatron: ", speedup)
+    for i, (model, long_name) in enumerate(model_name_mapping.items()):
+        speedup_ds = all_data[i]["slapo-deepspeed"] / all_data[i]["deepspeed"]
+        print(f"{model} Slapo-DS speedup vs DS: ", speedup_ds)
 
 
 if __name__ == "__main__":

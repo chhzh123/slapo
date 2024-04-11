@@ -10,7 +10,7 @@ then
     exit 1
 fi
 
-RESULT_FILE="$(date +"%Y-%m-%d-%T").csv"
+RESULT_FILE="single_node_v100.csv"
 
 # Dump env
 

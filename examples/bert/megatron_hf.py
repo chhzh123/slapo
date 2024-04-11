@@ -68,6 +68,7 @@ def get_model(
             ckpt_ratio=ckpt_ratio,
             disable_fusion=False,
             delay_init=delay_init,
+            disable_shard_embedding=os.environ.get("DISABLE_SHARD_EMBEDDING", "0") == "1",
         )
         model, _ = slapo.build(sch, init_weights=model._init_weights)
         report_memory()

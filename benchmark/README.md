@@ -90,6 +90,7 @@ popd
 
 - Apex (required by Megatron-LM) 0da3ffb
 ```bash
+# https://github.com/NVIDIA/apex/issues/1594#issuecomment-1636896697
 git clone https://github.com/NVIDIA/apex
 cd apex
 pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./

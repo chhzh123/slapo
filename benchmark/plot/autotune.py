@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
+
+matplotlib.rc('pdf', fonttype=42)
 
 thrpt = [
     [123.7, 124.3, 126.9, 0.0, 0.0, 0.0, 0.0],

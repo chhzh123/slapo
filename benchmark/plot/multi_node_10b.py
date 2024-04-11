@@ -5,10 +5,9 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib
 
-# import seaborn as sns
-# sns.set_theme(context="paper", style="whitegrid", palette=sns.color_palette("Set3", 10))
-
+matplotlib.rc('pdf', fonttype=42)
 
 def draw_bar(
     data,
